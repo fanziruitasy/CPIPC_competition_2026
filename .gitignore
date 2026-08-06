@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated document preprocessing data
+Data/staging/
+Data/processed/
+Data/indexes/
+
+# Local model and experiment caches
+.cache/
+debug/
+
+# Office temporary files
+~$*

@@ -1,0 +1,1073 @@
+{
+  "docling_version": "2.118.0",
+  "model": "docling.datamodel.pipeline_options.PdfPipelineOptions",
+  "schema": {
+    "$defs": {
+      "AcceleratorDevice": {
+        "description": "Devices to run model inference",
+        "enum": [
+          "auto",
+          "cpu",
+          "cuda",
+          "mps",
+          "xpu"
+        ],
+        "title": "AcceleratorDevice",
+        "type": "string"
+      },
+      "AcceleratorOptions": {
+        "additionalProperties": false,
+        "description": "Hardware acceleration configuration for model inference.\n\nCan be configured via environment variables with DOCLING_ prefix.",
+        "properties": {
+          "num_threads": {
+            "default": 4,
+            "description": "Number of CPU threads to use for model inference. Higher values can improve throughput on multi-core systems but may increase memory usage. Can be set via DOCLING_NUM_THREADS or OMP_NUM_THREADS environment variables. Recommended: number of physical CPU cores.",
+            "title": "Num Threads",
+            "type": "integer"
+          },
+          "device": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/AcceleratorDevice"
+              }
+            ],
+            "default": "auto",
+            "description": "Hardware device for model inference. Options: `auto` (automatic detection), `cpu` (CPU only), `cuda` (NVIDIA GPU), `cuda:N` (specific GPU), `mps` (Apple Silicon), `xpu` (Intel GPU). Auto mode selects the best available device. Can be set via DOCLING_DEVICE environment variable.",
+            "title": "Device"
+          },
+          "cuda_use_flash_attention2": {
+            "default": false,
+            "description": "Enable Flash Attention 2 optimization for CUDA devices. Provides significant speedup and memory reduction for transformer models on compatible NVIDIA GPUs (Ampere or newer). Requires flash-attn package installation. Can be set via DOCLING_CUDA_USE_FLASH_ATTENTION2 environment variable.",
+            "title": "Cuda Use Flash Attention2",
+            "type": "boolean"
+          }
+        },
+        "title": "AcceleratorOptions",
+        "type": "object"
+      },
+      "ApiModelConfig": {
+        "description": "API-specific model configuration.\n\nFor API engines, configuration is simpler - just params to send.",
+        "properties": {
+          "params": {
+            "additionalProperties": true,
+            "description": "API parameters (model name, max_tokens, etc.)",
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "title": "ApiModelConfig",
+        "type": "object"
+      },
+      "BaseImageClassificationEngineOptions": {
+        "description": "Base configuration shared across image-classification engines.",
+        "properties": {
+          "engine_type": {
+            "$ref": "#/$defs/ImageClassificationEngineType",
+            "description": "Type of inference engine to use"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Maximum number of classes to return. If None, all classes are returned.",
+            "title": "Top K"
+          }
+        },
+        "required": [
+          "engine_type"
+        ],
+        "title": "BaseImageClassificationEngineOptions",
+        "type": "object"
+      },
+      "BaseLayoutOptions": {
+        "description": "Base options for document layout analysis models.\n\nLayout analysis detects the structural regions of a document page\n(text blocks, tables, figures, headers, etc.) and assigns content\ncells to those regions. This base class provides the shared controls\nfor empty-cluster retention and cell-assignment skipping.\n\nSee Also:\n    `LayoutObjectDetectionOptions`: Default layout options; object-detection\n        runtime with preset support.\n    `LayoutOptions`: Deprecated predecessor, translated onto the above.",
+        "properties": {
+          "keep_empty_clusters": {
+            "default": false,
+            "description": "Retain empty clusters in layout analysis results. When False, clusters without content are removed. Enable for debugging or when empty regions are semantically important.",
+            "title": "Keep Empty Clusters",
+            "type": "boolean"
+          },
+          "skip_cell_assignment": {
+            "default": false,
+            "description": "Skip assignment of cells to table structures during layout analysis. When True, cells are detected but not associated with tables. Use for performance optimization when table structure is not needed.",
+            "title": "Skip Cell Assignment",
+            "type": "boolean"
+          },
+          "create_orphan_clusters": {
+            "default": true,
+            "description": "Create clusters for orphaned elements not assigned to any structure. When True, isolated text or elements are grouped into their own clusters. Recommended for complete document coverage.",
+            "title": "Create Orphan Clusters",
+            "type": "boolean"
+          }
+        },
+        "title": "BaseLayoutOptions",
+        "type": "object"
+      },
+      "BaseTableStructureOptions": {
+        "description": "Base options for table structure extraction models.\n\nServes as the abstract base for all table structure backends. Concrete\nimplementations (e.g., `TableStructureOptions` for TableFormer) inherit\nfrom this class and register their own `kind` discriminator.\n\nSee Also:\n    `TableStructureOptions`: Default TableFormer-based implementation.",
+        "properties": {},
+        "title": "BaseTableStructureOptions",
+        "type": "object"
+      },
+      "BaseVlmEngineOptions": {
+        "description": "Base configuration for VLM inference engines.\n\nEngine options are independent of model specifications and prompts.\nThey only control how the inference is executed.",
+        "properties": {
+          "engine_type": {
+            "$ref": "#/$defs/VlmEngineType",
+            "description": "Type of inference engine to use"
+          }
+        },
+        "required": [
+          "engine_type"
+        ],
+        "title": "BaseVlmEngineOptions",
+        "type": "object"
+      },
+      "ChartExtractionModelKind": {
+        "enum": [
+          "granite-vision",
+          "granite-vision-v4"
+        ],
+        "title": "ChartExtractionModelKind",
+        "type": "string"
+      },
+      "ChartExtractionModelOptions": {
+        "properties": {
+          "kind": {
+            "const": "chart_extraction",
+            "default": "chart_extraction",
+            "title": "Kind",
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/$defs/ChartExtractionModelKind",
+            "default": "granite-vision-v4"
+          },
+          "chart2csv": {
+            "default": true,
+            "title": "Chart2Csv",
+            "type": "boolean"
+          },
+          "chart2code": {
+            "default": false,
+            "title": "Chart2Code",
+            "type": "boolean"
+          },
+          "chart2summary": {
+            "default": false,
+            "title": "Chart2Summary",
+            "type": "boolean"
+          }
+        },
+        "title": "ChartExtractionModelOptions",
+        "type": "object"
+      },
+      "CodeFormulaVlmOptions": {
+        "description": "Configuration for VLM-based code and formula extraction.\n\nThis stage uses vision-language models to extract code blocks and\nmathematical formulas from document images. Supports preset-based\nconfiguration via StagePresetMixin.\n\nExamples:\n    # Use CodeFormulaV2 preset\n    options = CodeFormulaVlmOptions.from_preset(\"codeformulav2\")\n\n    # Use Granite Docling preset\n    options = CodeFormulaVlmOptions.from_preset(\"granite_docling\")",
+        "properties": {
+          "engine_options": {
+            "$ref": "#/$defs/BaseVlmEngineOptions",
+            "description": "Runtime configuration (transformers, mlx, api, etc.)"
+          },
+          "model_spec": {
+            "$ref": "#/$defs/VlmModelSpec",
+            "description": "Model specification with runtime-specific overrides"
+          },
+          "scale": {
+            "default": 2.0,
+            "description": "Image scaling factor for preprocessing",
+            "title": "Scale",
+            "type": "number"
+          },
+          "max_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Maximum image dimension (width or height)",
+            "title": "Max Size"
+          },
+          "extract_code": {
+            "default": true,
+            "description": "Extract code blocks",
+            "title": "Extract Code",
+            "type": "boolean"
+          },
+          "extract_formulas": {
+            "default": true,
+            "description": "Extract mathematical formulas",
+            "title": "Extract Formulas",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "engine_options",
+          "model_spec"
+        ],
+        "title": "CodeFormulaVlmOptions",
+        "type": "object"
+      },
+      "DocumentPictureClassifierOptions": {
+        "description": "Options for configuring the DocumentPictureClassifier stage.",
+        "properties": {
+          "engine_options": {
+            "$ref": "#/$defs/BaseImageClassificationEngineOptions",
+            "description": "Runtime configuration for the image-classification engine."
+          },
+          "model_spec": {
+            "$ref": "#/$defs/ImageClassificationModelSpec",
+            "description": "Image-classification model specification for picture classification."
+          }
+        },
+        "required": [
+          "engine_options"
+        ],
+        "title": "DocumentPictureClassifierOptions",
+        "type": "object"
+      },
+      "EngineModelConfig": {
+        "description": "Engine-specific model configuration.\n\nAllows overriding model settings for specific engines.\nFor example, MLX might use a different repo_id than Transformers.",
+        "properties": {
+          "repo_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Override model repository ID for this engine",
+            "title": "Repo Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Override model revision for this engine",
+            "title": "Revision"
+          },
+          "torch_dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Override torch dtype for this engine (e.g., 'bfloat16')",
+            "title": "Torch Dtype"
+          },
+          "extra_config": {
+            "additionalProperties": true,
+            "description": "Additional engine-specific configuration",
+            "title": "Extra Config",
+            "type": "object"
+          }
+        },
+        "title": "EngineModelConfig",
+        "type": "object"
+      },
+      "HeadingHierarchyOptions": {
+        "description": "Options for inferring section-header levels in the PDF/image pipeline.\n\nThe layout model only flags regions as ``SECTION_HEADER`` without a level, so every\nheading produced by the PDF path defaults to ``level=1`` and the document hierarchy is\nflattened. When ``enabled``, :class:`HeadingHierarchyModel` runs right after the\nreading-order model and assigns ``SectionHeaderItem.level`` from (in precedence order)\nPDF bookmarks/ToC, numbering and font style. The step changes heading levels and may\npromote a heading mis-classified as a list-item when it confidently matches a bookmark;\notherwise it never adds, removes or reorders items, and headings for which no signal\napplies keep their current level.\n\nNotes:\n    - ``use_bookmarks`` reads the PDF outline surfaced on ``ConversionResult._pdf_outline``.\n      When a bookmark confidently matches a detected heading it is authoritative; entries\n      that match nothing fall back to numbering/style, so partial/noisy outlines never\n      degrade the numbering result.\n    - ``use_style`` requires the parsed PDF cells to still be available when the\n      heading-hierarchy step runs, i.e.\n      ``PdfPipelineOptions.generate_parsed_pages=True``. Without them, style inference is\n      silently skipped (numbering still applies).",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "description": "Enable inference of section-header levels for the PDF/image pipeline. When disabled (default), all detected headings remain at level 1 (unchanged behavior).",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "use_bookmarks": {
+            "default": true,
+            "description": "Use the PDF bookmarks / table-of-contents (when present) as the authoritative heading signal. Bookmarks are fuzzily matched to detected headings by title and page; confident matches win over numbering and style, and a confidently matched list-item is promoted to a heading. Unmatched entries fall back to numbering/style.",
+            "title": "Use Bookmarks",
+            "type": "boolean"
+          },
+          "use_numbering": {
+            "default": true,
+            "description": "Use legal/outline numbering (e.g. PART I -> 1. -> 1.1 -> (a) -> (i), Roman vs Arabic numerals) as the primary signal for headings without a bookmark match.",
+            "title": "Use Numbering",
+            "type": "boolean"
+          },
+          "use_style": {
+            "default": true,
+            "description": "Use font size (approximated from parsed PDF cell heights) as a fallback for headings without recognizable numbering. Requires `generate_parsed_pages=True`.",
+            "title": "Use Style",
+            "type": "boolean"
+          },
+          "numbering_schemes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional override of the numbering-scheme precedence (highest level first). Known schemes: 'part', 'chapter', 'article', 'roman_u', 'arabic', 'alpha_u', 'alpha_l', 'roman_l'. When None, a default legal/regulatory ordering is used.",
+            "title": "Numbering Schemes"
+          },
+          "max_level": {
+            "default": 6,
+            "description": "Maximum heading level to assign. Deeper levels are clamped.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Max Level",
+            "type": "integer"
+          },
+          "bookmark_match_threshold": {
+            "default": 0.8,
+            "description": "Minimum normalized title-similarity (0..1) for a bookmark to be considered a match to a detected heading/list-item. Below this, the bookmark is ignored and the heading falls back to numbering/style. Higher = stricter.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Bookmark Match Threshold",
+            "type": "number"
+          }
+        },
+        "title": "HeadingHierarchyOptions",
+        "type": "object"
+      },
+      "ImageClassificationEngineType": {
+        "description": "Supported inference engine types for image-classification models.",
+        "enum": [
+          "onnxruntime",
+          "transformers",
+          "api_kserve_v2"
+        ],
+        "title": "ImageClassificationEngineType",
+        "type": "string"
+      },
+      "ImageClassificationModelSpec": {
+        "description": "Specification for an image-classification model.",
+        "properties": {
+          "name": {
+            "description": "Human-readable model name",
+            "title": "Name",
+            "type": "string"
+          },
+          "repo_id": {
+            "description": "Default HuggingFace repository ID",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": "main",
+            "description": "Default model revision",
+            "title": "Revision",
+            "type": "string"
+          },
+          "engine_overrides": {
+            "additionalProperties": {
+              "$ref": "#/$defs/EngineModelConfig"
+            },
+            "description": "Engine-specific configuration overrides",
+            "propertyNames": {
+              "$ref": "#/$defs/ImageClassificationEngineType"
+            },
+            "title": "Engine Overrides",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "repo_id"
+        ],
+        "title": "ImageClassificationModelSpec",
+        "type": "object"
+      },
+      "OcrMode": {
+        "description": "How to generate the input for the OCR model",
+        "enum": [
+          "full_page",
+          "layout_regions",
+          "pdf_aware_layout_regions",
+          "default"
+        ],
+        "title": "OcrMode",
+        "type": "string"
+      },
+      "OcrOptions": {
+        "description": "Base configuration for Optical Character Recognition engines.\n\nDefines the common interface shared by all OCR engine implementations.\nSubclasses provide engine-specific parameters while inheriting the shared\nlanguage selection, full-page OCR toggle, and bitmap area threshold.\n\nSee Also:\n    `OcrAutoOptions`: Automatic engine selection based on availability.\n    `EasyOcrOptions`, `TesseractCliOcrOptions`, `TesseractOcrOptions`,\n    `RapidOcrOptions`, `OcrMacOptions`, `NemotronOcrOptions`: Engine-specific\n    configurations.",
+        "properties": {
+          "mode": {
+            "$ref": "#/$defs/OcrMode",
+            "default": "default",
+            "description": "Which document regions to feed as input to the OCR",
+            "examples": [
+              "full_page",
+              "layout_regions",
+              "pdf_aware_layout_regions",
+              "default"
+            ]
+          },
+          "lang": {
+            "description": "List of OCR languages to use. The format must match the values of the OCR engine of choice.",
+            "examples": [
+              [
+                "deu",
+                "eng"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Lang",
+            "type": "array"
+          },
+          "scale": {
+            "default": 3.0,
+            "description": "Image scale multiplier applied before running OCR. The page is rendered at 72 DPI times this factor, so the default 3 yields 216 DPI. Lower it when the source image is already high resolution and upscaling degrades recognition.",
+            "examples": [
+              1.0,
+              3.0
+            ],
+            "exclusiveMinimum": 0.0,
+            "title": "Scale",
+            "type": "number"
+          },
+          "force_full_page_ocr": {
+            "default": false,
+            "deprecated": true,
+            "description": "If enabled, a full-page OCR is always applied.",
+            "examples": [
+              false
+            ],
+            "title": "Force Full Page Ocr",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lang"
+        ],
+        "title": "OcrOptions",
+        "type": "object"
+      },
+      "PictureClassificationLabel": {
+        "description": "PictureClassificationLabel.",
+        "enum": [
+          "bar_chart",
+          "box_plot",
+          "flow_chart",
+          "line_chart",
+          "pie_chart",
+          "scatter_plot",
+          "table",
+          "other_chart",
+          "full_page_image",
+          "page_thumbnail",
+          "photograph",
+          "chemistry_structure",
+          "bar_code",
+          "icon",
+          "logo",
+          "qr_code",
+          "signature",
+          "stamp",
+          "engineering_drawing",
+          "screenshot_from_computer",
+          "screenshot_from_manual",
+          "geographical_map",
+          "topographical_map",
+          "calendar",
+          "crossword_puzzle",
+          "music",
+          "other",
+          "cad_drawing",
+          "electrical_diagram",
+          "map",
+          "heatmap",
+          "chemistry_markush_structure",
+          "chemistry_molecular_structure",
+          "natural_image",
+          "picture_group",
+          "remote_sensing",
+          "scatter_chart",
+          "screenshot",
+          "stacked_bar_chart",
+          "stratigraphic_chart"
+        ],
+        "title": "PictureClassificationLabel",
+        "type": "string"
+      },
+      "PictureDescriptionBaseOptions": {
+        "description": "Base configuration for picture description models.\n\nProvides shared parameters for all picture description backends,\nincluding batch processing, image scaling, area thresholds, and\nclassification-based filtering (allow/deny lists). Concrete\nimplementations supply the actual model integration.\n\nSee Also:\n    `PictureDescriptionApiOptions`: OpenAI-compatible API backend.\n    `PictureDescriptionVlmOptions`: Legacy HuggingFace Transformers\n        backend.\n    `PictureDescriptionVlmEngineOptions`: New runtime-based backend\n        with preset support (recommended).",
+        "properties": {
+          "batch_size": {
+            "default": 8,
+            "description": "Number of images to process in a single batch during picture description. Higher values improve throughput but increase memory usage. Adjust based on available GPU/CPU memory.",
+            "minimum": 1,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "scale": {
+            "default": 2.0,
+            "description": "Scaling factor for image resolution before processing. Higher values (e.g., 2.0) provide more detail for the vision model but increase processing time and memory. Range: 0.5-4.0 typical.",
+            "exclusiveMinimum": 0,
+            "title": "Scale",
+            "type": "number"
+          },
+          "picture_area_threshold": {
+            "default": 0.05,
+            "description": "Minimum picture area as fraction of page area (0.0-1.0) to trigger description. Pictures smaller than this threshold are skipped. Use lower values (e.g., 0.01) to describe small images.",
+            "title": "Picture Area Threshold",
+            "type": "number"
+          },
+          "classification_allow": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/PictureClassificationLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "List of picture classification labels to allow for description. Only pictures classified with these labels will be processed. If None, all picture types are allowed unless explicitly denied. Use to focus description on specific image types (e.g., diagrams, charts).",
+            "title": "Classification Allow"
+          },
+          "classification_deny": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/PictureClassificationLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "List of picture classification labels to exclude from description. Pictures classified with these labels will be skipped. If None, no picture types are denied unless not in allow list. Use to exclude unwanted image types (e.g., decorative images, logos).",
+            "title": "Classification Deny"
+          },
+          "classification_min_confidence": {
+            "default": 0.0,
+            "description": "Minimum classification confidence score (0.0-1.0) required for a picture to be processed. Pictures with classification confidence below this threshold are skipped. Higher values ensure only confidently classified images are described. Range: 0.0 (no filtering) to 1.0 (maximum confidence).",
+            "title": "Classification Min Confidence",
+            "type": "number"
+          }
+        },
+        "title": "PictureDescriptionBaseOptions",
+        "type": "object"
+      },
+      "ResponseFormat": {
+        "enum": [
+          "doctags",
+          "doclang",
+          "markdown",
+          "deepseekocr_markdown",
+          "html",
+          "otsl",
+          "plaintext",
+          "chandra_html",
+          "dots_json"
+        ],
+        "title": "ResponseFormat",
+        "type": "string"
+      },
+      "VlmEngineType": {
+        "description": "Types of VLM inference engines available.",
+        "enum": [
+          "transformers",
+          "mlx",
+          "vllm",
+          "api",
+          "api_ollama",
+          "api_lmstudio",
+          "api_openai",
+          "auto_inline"
+        ],
+        "title": "VlmEngineType",
+        "type": "string"
+      },
+      "VlmModelSpec": {
+        "description": "Specification for a VLM model.\n\nThis defines the model configuration that is independent of the engine.\nIt includes:\n- Default model repository ID\n- Prompt template\n- Response format\n- Engine-specific overrides",
+        "properties": {
+          "name": {
+            "description": "Human-readable model name",
+            "title": "Name",
+            "type": "string"
+          },
+          "default_repo_id": {
+            "description": "Default HuggingFace repository ID",
+            "title": "Default Repo Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": "main",
+            "description": "Default model revision",
+            "title": "Revision",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Prompt template for this model",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "response_format": {
+            "$ref": "#/$defs/ResponseFormat",
+            "description": "Expected response format from the model"
+          },
+          "supported_engines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/VlmEngineType"
+                },
+                "type": "array",
+                "uniqueItems": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set of supported engines (None = all supported)",
+            "title": "Supported Engines"
+          },
+          "engine_overrides": {
+            "additionalProperties": {
+              "$ref": "#/$defs/EngineModelConfig"
+            },
+            "description": "Engine-specific configuration overrides",
+            "propertyNames": {
+              "$ref": "#/$defs/VlmEngineType"
+            },
+            "title": "Engine Overrides",
+            "type": "object"
+          },
+          "api_overrides": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ApiModelConfig"
+            },
+            "description": "API-specific configuration overrides",
+            "propertyNames": {
+              "$ref": "#/$defs/VlmEngineType"
+            },
+            "title": "Api Overrides",
+            "type": "object"
+          },
+          "trust_remote_code": {
+            "default": false,
+            "description": "Whether to trust remote code for this model",
+            "title": "Trust Remote Code",
+            "type": "boolean"
+          },
+          "stop_strings": {
+            "description": "Stop strings for generation",
+            "items": {
+              "type": "string"
+            },
+            "title": "Stop Strings",
+            "type": "array"
+          },
+          "temperature": {
+            "default": 0.0,
+            "description": "Sampling temperature for generation",
+            "title": "Temperature",
+            "type": "number"
+          },
+          "max_new_tokens": {
+            "default": 4096,
+            "description": "Maximum number of new tokens to generate",
+            "title": "Max New Tokens",
+            "type": "integer"
+          },
+          "extra_generation_config": {
+            "additionalProperties": true,
+            "description": "Additional generation configuration",
+            "title": "Extra Generation Config",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "default_repo_id",
+          "prompt",
+          "response_format"
+        ],
+        "title": "VlmModelSpec",
+        "type": "object"
+      }
+    },
+    "description": "Configuration options for the PDF document processing pipeline.\n\nNotes:\n    - Enabling multiple features (OCR, table structure, formulas) increases the processing time significantly.\n        Enable only necessary features for your use case.\n    - For production systems processing large document volumes, implement a timeout protection (for instance, 90-120\n        seconds via `document_timeout` parameter).\n    - OCR requires a system installation of engines (Tesseract, EasyOCR). Verify the installation before enabling\n        OCR via `do_ocr=True`.\n    - RapidOCR has known issues with read-only filesystems (e.g., Databricks). Consider Tesseract or alternative\n        backends for distributed systems.\n\nSee Also:\n    - `examples/pipeline_options_advanced.py`: Comprehensive configuration examples.",
+    "properties": {
+      "document_timeout": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Maximum processing time in seconds before aborting document conversion. When exceeded, the pipeline stops processing and returns partial results with PARTIAL_SUCCESS status. Timeout errors are recorded in ConversionResult.errors with category=TIMEOUT and descriptive error messages. Use ConversionResult.has_timeout_errors() to detect timeouts. If None, no timeout is enforced. Recommended: 90-120 seconds for production systems.",
+        "examples": [
+          10.0,
+          20.0
+        ],
+        "title": "Document Timeout"
+      },
+      "accelerator_options": {
+        "$ref": "#/$defs/AcceleratorOptions",
+        "default": {
+          "num_threads": 4,
+          "device": "auto",
+          "cuda_use_flash_attention2": false
+        },
+        "description": "Hardware acceleration configuration for model inference. Controls GPU device selection, memory management, and execution optimization settings for layout, OCR, and table structure models."
+      },
+      "enable_remote_services": {
+        "default": false,
+        "description": "Allow pipeline to call external APIs or cloud services during processing. Required for API-based picture description models. Disabled by default for security and offline operation.",
+        "examples": [
+          false
+        ],
+        "title": "Enable Remote Services",
+        "type": "boolean"
+      },
+      "allow_external_plugins": {
+        "default": false,
+        "description": "Allow loading external third-party plugins for OCR, layout, table structure, or picture description models. Enables custom model implementations via plugin system. Disabled by default for security.",
+        "examples": [
+          false
+        ],
+        "title": "Allow External Plugins",
+        "type": "boolean"
+      },
+      "artifacts_path": {
+        "anyOf": [
+          {
+            "format": "path",
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Local directory containing pre-downloaded model artifacts (weights, configs). If None, models are fetched from remote sources on first use. Use `docling-tools models download` to pre-fetch artifacts for offline operation or faster initialization.",
+        "examples": [
+          "./artifacts",
+          "/tmp/docling_outputs"
+        ],
+        "title": "Artifacts Path"
+      },
+      "do_picture_classification": {
+        "default": false,
+        "description": "Enable picture classification to categorize images by type (photo, diagram, chart, etc.). Useful for downstream processing that requires image type awareness.",
+        "title": "Do Picture Classification",
+        "type": "boolean"
+      },
+      "picture_classification_options": {
+        "$ref": "#/$defs/DocumentPictureClassifierOptions",
+        "default": {
+          "engine_options": {
+            "engine_type": "transformers",
+            "top_k": null
+          },
+          "model_spec": {
+            "engine_overrides": {},
+            "name": "document_figure_classifier_v2",
+            "repo_id": "docling-project/DocumentFigureClassifier-v2.5",
+            "revision": "main"
+          }
+        },
+        "description": "Configuration for picture classification model/runtime. Supports selecting transformers, onnxruntime, or remote api_kserve_v2 inference engines."
+      },
+      "do_picture_description": {
+        "default": false,
+        "description": "Enable automatic generation of textual descriptions for pictures using vision-language models. Descriptions are added to the document for accessibility and searchability.",
+        "title": "Do Picture Description",
+        "type": "boolean"
+      },
+      "picture_description_options": {
+        "$ref": "#/$defs/PictureDescriptionBaseOptions",
+        "default": {
+          "batch_size": 8,
+          "scale": 2.0,
+          "picture_area_threshold": 0.05,
+          "classification_allow": null,
+          "classification_deny": null,
+          "classification_min_confidence": 0.0,
+          "engine_options": {
+            "engine_type": "auto_inline"
+          },
+          "model_spec": {
+            "api_overrides": {
+              "api_lmstudio": {
+                "params": {
+                  "model": "smolvlm-256m-instruct"
+                }
+              }
+            },
+            "default_repo_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+            "engine_overrides": {
+              "mlx": {
+                "extra_config": {},
+                "repo_id": "moot20/SmolVLM-256M-Instruct-MLX",
+                "revision": null,
+                "torch_dtype": null
+              },
+              "transformers": {
+                "extra_config": {
+                  "transformers_model_type": "automodel-imagetexttotext"
+                },
+                "repo_id": null,
+                "revision": null,
+                "torch_dtype": "bfloat16"
+              }
+            },
+            "extra_generation_config": {},
+            "max_new_tokens": 4096,
+            "name": "SmolVLM-256M-Instruct",
+            "prompt": "Describe this image in a few sentences.",
+            "response_format": "plaintext",
+            "revision": "main",
+            "stop_strings": [],
+            "supported_engines": null,
+            "temperature": 0.0,
+            "trust_remote_code": false
+          },
+          "prompt": "Describe this image in a few sentences.",
+          "generation_config": {
+            "do_sample": false,
+            "max_new_tokens": 200
+          }
+        },
+        "description": "Configuration for picture description model. Uses new preset system (recommended). Default: 'smolvlm' preset. Only applicable when `do_picture_description=True`. Example: PictureDescriptionVlmOptions.from_preset('granite_vision')"
+      },
+      "do_chart_extraction": {
+        "default": false,
+        "description": "Enable chart data extraction to convert bar, pie, and line charts into structured tabular data. Automatically enables picture classification. Only applicable when `do_chart_extraction=True`.",
+        "title": "Do Chart Extraction",
+        "type": "boolean"
+      },
+      "chart_extraction_options": {
+        "$ref": "#/$defs/ChartExtractionModelOptions",
+        "default": {
+          "kind": "chart_extraction",
+          "model": "granite-vision-v4",
+          "chart2csv": true,
+          "chart2code": false,
+          "chart2summary": false
+        },
+        "description": "Configuration for the chart extraction model, including which model variant to use and which output formats to generate (CSV, code, summary)."
+      },
+      "images_scale": {
+        "default": 1.0,
+        "description": "Scaling factor for generated images. Higher values produce higher resolution but increase processing time and storage requirements. Recommended values: 1.0 (standard quality), 2.0 (high resolution), 0.5 (lower resolution for previews).",
+        "title": "Images Scale",
+        "type": "number"
+      },
+      "generate_page_images": {
+        "default": false,
+        "description": "Generate rendered page images during extraction. Creates PNG representations of each page for visual preview, validation, or downstream image-based machine learning tasks.",
+        "title": "Generate Page Images",
+        "type": "boolean"
+      },
+      "generate_picture_images": {
+        "default": false,
+        "description": "Extract and save embedded images from the PDF. Exports individual images (figures, photos, diagrams, charts) found in the document as separate image files for downstream use.",
+        "title": "Generate Picture Images",
+        "type": "boolean"
+      },
+      "do_table_structure": {
+        "default": true,
+        "description": "Enable table structure extraction and reconstruction. Detects table regions, extracts cell content with row/column relationships, and reconstructs the logical table structure for downstream processing.",
+        "title": "Do Table Structure",
+        "type": "boolean"
+      },
+      "do_ocr": {
+        "default": true,
+        "description": "Enable Optical Character Recognition for scanned or image-based PDFs. Replaces or supplements programmatic text extraction with OCR-detected text. Required for scanned documents with no embedded text layer. Note: OCR significantly increases processing time.",
+        "title": "Do Ocr",
+        "type": "boolean"
+      },
+      "do_code_enrichment": {
+        "default": false,
+        "description": "Enable specialized processing for code blocks. Applies code-aware OCR and formatting to improve accuracy of programming language snippets, terminal output, and structured code content.",
+        "title": "Do Code Enrichment",
+        "type": "boolean"
+      },
+      "do_formula_enrichment": {
+        "default": false,
+        "description": "Enable mathematical formula recognition and LaTeX conversion. Uses specialized models to detect and extract mathematical expressions, converting them to LaTeX format for accurate representation.",
+        "title": "Do Formula Enrichment",
+        "type": "boolean"
+      },
+      "force_backend_text": {
+        "default": false,
+        "description": "Force use of PDF backend's native text extraction instead of layout model predictions. When enabled, bypasses the layout model's text detection and uses the embedded text from the PDF file directly. Useful for PDFs with reliable programmatic text layers.",
+        "title": "Force Backend Text",
+        "type": "boolean"
+      },
+      "table_structure_options": {
+        "$ref": "#/$defs/BaseTableStructureOptions",
+        "default": {
+          "do_cell_matching": true,
+          "mode": "accurate"
+        },
+        "description": "Configuration for table structure extraction. Controls table detection accuracy, cell matching behavior, and table formatting. Only applicable when `do_table_structure=True`."
+      },
+      "ocr_options": {
+        "$ref": "#/$defs/OcrOptions",
+        "default": {
+          "mode": "default",
+          "lang": [],
+          "scale": 3.0,
+          "force_full_page_ocr": false
+        },
+        "description": "Configuration for OCR engine. Specifies which OCR engine to use (Tesseract, EasyOCR, RapidOCR, etc.) and engine-specific settings. Only applicable when `do_ocr=True`."
+      },
+      "layout_options": {
+        "$ref": "#/$defs/BaseLayoutOptions",
+        "description": "Configuration for document layout analysis model. Controls layout detection behavior including cluster creation for orphaned elements, cell assignment to table structures, and handling of empty regions. Specifies which layout model to use (default: Heron)."
+      },
+      "code_formula_options": {
+        "$ref": "#/$defs/CodeFormulaVlmOptions",
+        "default": {
+          "engine_options": {
+            "engine_type": "auto_inline"
+          },
+          "model_spec": {
+            "api_overrides": {},
+            "default_repo_id": "docling-project/CodeFormulaV2",
+            "engine_overrides": {
+              "transformers": {
+                "extra_config": {
+                  "extra_generation_config": {
+                    "skip_special_tokens": false
+                  },
+                  "torch_dtype": "bfloat16",
+                  "transformers_model_type": "automodel-imagetexttotext"
+                },
+                "repo_id": null,
+                "revision": null,
+                "torch_dtype": null
+              }
+            },
+            "extra_generation_config": {},
+            "max_new_tokens": 4096,
+            "name": "CodeFormulaV2",
+            "prompt": "",
+            "response_format": "plaintext",
+            "revision": "main",
+            "stop_strings": [
+              "</doctag>",
+              "<end_of_utterance>"
+            ],
+            "supported_engines": null,
+            "temperature": 0.0,
+            "trust_remote_code": false
+          },
+          "scale": 2.0,
+          "max_size": null,
+          "extract_code": true,
+          "extract_formulas": true
+        },
+        "description": "Configuration for code and formula extraction using VLM. Uses new preset system (recommended). Default: 'default' preset. Only applicable when `do_code_enrichment=True` or `do_formula_enrichment=True`. Example: CodeFormulaVlmOptions.from_preset('granite_vision')"
+      },
+      "generate_table_images": {
+        "default": false,
+        "deprecated": true,
+        "title": "Generate Table Images",
+        "type": "boolean"
+      },
+      "generate_parsed_pages": {
+        "default": false,
+        "description": "Retain intermediate parsed page representations after processing. When enabled, keeps detailed page-level parsing data structures for debugging or advanced post-processing. Increases memory usage. Automatically disabled after document assembly unless explicitly enabled.",
+        "title": "Generate Parsed Pages",
+        "type": "boolean"
+      },
+      "heading_hierarchy_options": {
+        "$ref": "#/$defs/HeadingHierarchyOptions",
+        "default": {
+          "enabled": false,
+          "use_bookmarks": true,
+          "use_numbering": true,
+          "use_style": true,
+          "numbering_schemes": null,
+          "max_level": 6,
+          "bookmark_match_threshold": 0.8
+        },
+        "description": "Configuration for inferring section-header levels from PDF bookmarks, numbering and font style. Disabled by default; when enabled, the reading-order stage assigns SectionHeaderItem.level instead of leaving every heading at level 1."
+      },
+      "ocr_batch_size": {
+        "default": 4,
+        "description": "Batch size for OCR processing stage in threaded pipeline. Pages are grouped and processed together to improve throughput. Higher values increase GPU/CPU utilization but require more memory. Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Ocr Batch Size",
+        "type": "integer"
+      },
+      "layout_batch_size": {
+        "default": 4,
+        "description": "Batch size for layout analysis stage in threaded pipeline. Pages are grouped and processed together by the layout model. Higher values improve throughput but increase memory usage. Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Layout Batch Size",
+        "type": "integer"
+      },
+      "table_batch_size": {
+        "default": 4,
+        "description": "Batch size for table structure extraction stage in threaded pipeline. Tables from multiple pages are processed together. Higher values improve throughput but increase memory usage. Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Table Batch Size",
+        "type": "integer"
+      },
+      "batch_polling_interval_seconds": {
+        "default": 0.5,
+        "description": "Polling interval in seconds for batch collection in threaded pipeline stages. Each stage waits up to this duration to accumulate items before processing. Lower values reduce latency but may decrease batching efficiency. Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Batch Polling Interval Seconds",
+        "type": "number"
+      },
+      "queue_max_size": {
+        "default": 100,
+        "description": "Maximum queue size for inter-stage communication in threaded pipeline. Limits the number of items buffered between processing stages to prevent memory overflow. When full, upstream stages block until space is available. Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Queue Max Size",
+        "type": "integer"
+      },
+      "stage_shutdown_timeout_seconds": {
+        "default": 15.0,
+        "description": "Seconds to wait for each pipeline stage thread to terminate during shutdown before it is abandoned as stuck (its resources may then leak for the rest of the process lifetime). Only used by `StandardPdfPipeline` (threaded mode).",
+        "title": "Stage Shutdown Timeout Seconds",
+        "type": "number"
+      }
+    },
+    "title": "PdfPipelineOptions",
+    "type": "object"
+  }
+}
