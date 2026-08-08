@@ -228,3 +228,5 @@ debug/
 
 # Office temporary files
 ~$*
+/Data/
+/resources/

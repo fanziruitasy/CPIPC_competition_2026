@@ -1,0 +1,54 @@
+quality:
+  config_version: '0.01'
+  methodology_version: '0.01'
+  run_id: docling-python-v0.01-full-001
+  runs_root: Data/staging/document_preprocessing/runs
+  expected_counts:
+    doc: 32
+    docx: 34
+    pdf: 45
+    total: 111
+
+  hard_gates:
+    success_rate: 1.0
+    required_artifact_rate: 1.0
+    source_unchanged_rate: 1.0
+    artifact_checksum_rate: 1.0
+    json_parse_rate: 1.0
+    json_pointer_integrity_rate: 1.0
+    body_reachability_rate: 1.0
+    resource_integrity_rate: 1.0
+    serialized_resource_integrity_rate: 1.0
+    absolute_path_leak_count: 0
+    replacement_character_count: 0
+    unicode_escape_count: 0
+    pdf_page_count_match_rate: 1.0
+
+  warning_thresholds:
+    source_character_recall_min: 0.95
+    source_number_recall_min: 0.995
+    markdown_character_recall_min: 0.98
+    markdown_number_recall_min: 0.995
+    pdf_text_evidence_rate_min: 0.99
+    pdf_table_evidence_rate_min: 1.0
+    word_table_count_recall_min: 0.90
+    minimum_baseline_characters: 20
+    minimum_baseline_numbers: 3
+
+  human_review:
+    sample_per_format: 8
+    random_seed: 20260807
+    required_dimensions:
+      - text_completeness
+      - reading_order
+      - heading_hierarchy
+      - list_structure
+      - table_structure
+      - numeric_fidelity
+      - image_and_formula_handling
+      - source_evidence_traceability
+    severity_scale:
+      - P0
+      - P1
+      - P2
+      - PASS

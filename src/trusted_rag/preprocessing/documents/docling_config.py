@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 import yaml
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import (
+    ConvertPipelineOptions,
+    PdfPipelineOptions,
+)
 from docling.datamodel.settings import AppSettings
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import DoclingDocument, ImageRefMode
 from pydantic import BaseModel
+
+from .document_inventory import (
+    DocumentSource,
+    describe_documents,
+    discover_documents,
+    sha256_file,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -26,12 +35,15 @@ EXPECTED_RUNS_ROOT = (
     REPO_ROOT / 'Data' / 'staging' / 'document_preprocessing' / 'runs'
 ).resolve()
 
+PipelineOptionsT = TypeVar('PipelineOptionsT', bound=BaseModel)
+
 
 @dataclass(frozen=True)
-class SampleConfig:
-    sample_id: str
-    source_path: Path
-    purpose: str
+class LegacyDocArtifact:
+    conversion_run_id: str
+    normalized_path: Path
+    normalized_sha256: str
+    libreoffice_version: str
 
 
 @dataclass(frozen=True)
@@ -43,17 +55,11 @@ class RunPlan:
     input_root: Path
     runs_root: Path
     run_root: Path
-    samples: tuple[SampleConfig, ...]
+    sources: tuple[DocumentSource, ...]
+    legacy_doc_artifacts: dict[str, LegacyDocArtifact]
     runtime_settings: AppSettings
-    pdf_pipeline_options: PdfPipelineOptions
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest().upper()
+    pdf_pipeline_options: PdfPipelineOptions | None
+    word_pipeline_options: ConvertPipelineOptions | None
 
 
 def _ensure_child(path: Path, parent: Path, label: str) -> Path:
@@ -92,15 +98,21 @@ def _validate_callable_options(
         )
 
 
-def _validate_pdf_pipeline_options(raw: dict[str, Any]) -> PdfPipelineOptions:
-    unknown = sorted(set(raw) - set(PdfPipelineOptions.model_fields))
+def _validate_pipeline_options(
+    raw: dict[str, Any],
+    model_type: type[PipelineOptionsT],
+    label: str,
+) -> PipelineOptionsT:
+    unknown = sorted(set(raw) - set(model_type.model_fields))
     if unknown:
         raise ValueError(
-            'docling.pdf_pipeline_options contains unsupported top-level '
-            'options: {}'.format(unknown)
+            '{} contains unsupported top-level options: {}'.format(
+                label,
+                unknown,
+            )
         )
-    options = PdfPipelineOptions.model_validate(raw)
-    defaults = PdfPipelineOptions()
+    options = model_type.model_validate(raw)
+    defaults = model_type()
     selector_keys = {'kind'}
     for name, raw_value in raw.items():
         if not isinstance(raw_value, dict):
@@ -121,8 +133,11 @@ def _validate_pdf_pipeline_options(raw: dict[str, Any]) -> PdfPipelineOptions:
         if not configured_keys <= default_fields:
             unknown_nested = sorted(configured_keys - default_fields)
             raise ValueError(
-                'docling.pdf_pipeline_options.{} contains unsupported '
-                'options: {}'.format(name, unknown_nested)
+                '{}.{} contains unsupported options: {}'.format(
+                    label,
+                    name,
+                    unknown_nested,
+                )
             )
         setattr(
             options,
@@ -130,6 +145,196 @@ def _validate_pdf_pipeline_options(raw: dict[str, Any]) -> PdfPipelineOptions:
             type(default_value).model_validate(raw_value),
         )
     return options
+
+
+def _validate_pdf_pipeline_options(raw: dict[str, Any]) -> PdfPipelineOptions:
+    return _validate_pipeline_options(
+        raw,
+        PdfPipelineOptions,
+        'docling.pdf_pipeline_options',
+    )
+
+
+def _validate_word_pipeline_options(
+    raw: dict[str, Any],
+) -> ConvertPipelineOptions:
+    return _validate_pipeline_options(
+        raw,
+        ConvertPipelineOptions,
+        'docling.word_pipeline_options',
+    )
+
+
+def _source_format_counts(
+    sources: tuple[DocumentSource, ...],
+) -> dict[str, int]:
+    counts = {'doc': 0, 'docx': 0, 'pdf': 0}
+    for source in sources:
+        counts[source.source_format] += 1
+    counts['total'] = len(sources)
+    return counts
+
+
+def _load_sources(
+    project: dict[str, Any],
+    input_root: Path,
+) -> tuple[DocumentSource, ...]:
+    has_samples = 'samples' in project
+    has_selection = 'source_selection' in project
+    if has_samples == has_selection:
+        raise ValueError(
+            'project must contain exactly one of samples or source_selection'
+        )
+
+    if has_samples:
+        paths = []
+        configured: dict[str, dict[str, Any]] = {}
+        for raw_item in project.get('samples', []):
+            item = _require_mapping(raw_item, 'project.samples item')
+            source_path = _ensure_child(
+                input_root / str(item['path']),
+                input_root,
+                'sample source',
+            )
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            if source_path.suffix.lower() not in {'.doc', '.docx', '.pdf'}:
+                raise ValueError('unsupported sample source: {}'.format(source_path))
+            relative_path = source_path.relative_to(input_root).as_posix()
+            configured[relative_path] = item
+            paths.append(source_path)
+        if not paths:
+            raise ValueError('project.samples must not be empty')
+        described = describe_documents(paths, input_root)
+        sources = []
+        for source in described:
+            item = configured[source.relative_path]
+            configured_id = str(item['id'])
+            if configured_id != source.doc_id:
+                raise ValueError(
+                    'configured id {} does not match derived id {} for {}'.format(
+                        configured_id,
+                        source.doc_id,
+                        source.relative_path,
+                    )
+                )
+            sources.append(
+                replace(source, purpose=str(item.get('purpose', '')))
+            )
+        return tuple(sources)
+
+    selection = _require_mapping(
+        project['source_selection'],
+        'project.source_selection',
+    )
+    if selection.get('mode') != 'all':
+        raise ValueError('project.source_selection.mode must be all')
+    sources = discover_documents(
+        input_root=input_root,
+        recursive=bool(selection.get('recursive', True)),
+        include_extensions=tuple(selection.get('include_extensions', [])),
+        exclude_name_prefixes=tuple(
+            str(value)
+            for value in selection.get('exclude_name_prefixes', ['~$'])
+        ),
+        order_by=str(selection.get('order_by', 'relative_path')),
+    )
+    if not sources:
+        raise ValueError('no supported source documents were discovered')
+    expected = _require_mapping(
+        selection.get('expected_counts', {}),
+        'project.source_selection.expected_counts',
+    )
+    actual = _source_format_counts(sources)
+    normalized_expected = {
+        key: int(expected.get(key, 0))
+        for key in ('doc', 'docx', 'pdf', 'total')
+    }
+    if normalized_expected != actual:
+        raise ValueError(
+            'source count mismatch: expected {}, actual {}'.format(
+                normalized_expected,
+                actual,
+            )
+        )
+    return sources
+
+
+def _load_legacy_doc_artifacts(
+    project: dict[str, Any],
+    sources: tuple[DocumentSource, ...],
+    runs_root: Path,
+) -> dict[str, LegacyDocArtifact]:
+    legacy_sources = {
+        source.doc_id: source
+        for source in sources
+        if source.source_format == 'doc'
+    }
+    if not legacy_sources:
+        return {}
+    conversion = _require_mapping(
+        project.get('legacy_doc_conversion'),
+        'project.legacy_doc_conversion',
+    )
+    if conversion.get('require_success_manifest') is not True:
+        raise ValueError(
+            'project.legacy_doc_conversion.require_success_manifest must be true'
+        )
+    conversion_run_id = str(conversion['run_id'])
+    conversion_root = _ensure_child(
+        runs_root / conversion_run_id,
+        runs_root,
+        'legacy DOC conversion run',
+    )
+    manifest_path = conversion_root / 'manifest.jsonl'
+    run_path = conversion_root / 'run.json'
+    if not manifest_path.is_file() or not run_path.is_file():
+        raise FileNotFoundError(
+            'legacy DOC conversion run is incomplete: {}'.format(conversion_root)
+        )
+    run_metadata = json.loads(run_path.read_text(encoding='utf-8'))
+    libreoffice_version = str(run_metadata.get('libreoffice_version', 'unknown'))
+    records = {}
+    with manifest_path.open('r', encoding='utf-8') as stream:
+        for line in stream:
+            if line.strip():
+                record = json.loads(line)
+                records[str(record['doc_id'])] = record
+
+    artifacts = {}
+    for doc_id, source in legacy_sources.items():
+        record = records.get(doc_id)
+        if record is None or record.get('status') != 'success':
+            raise RuntimeError(
+                'legacy DOC conversion is not successful for {}'.format(doc_id)
+            )
+        if record.get('source_sha256_before') != source.source_sha256:
+            raise RuntimeError(
+                'legacy DOC source hash changed since conversion: {}'.format(
+                    source.source_path
+                )
+            )
+        normalized_path = _ensure_child(
+            REPO_ROOT / str(record['normalized_path']),
+            conversion_root,
+            'legacy normalized DOCX',
+        )
+        if not normalized_path.is_file():
+            raise FileNotFoundError(normalized_path)
+        normalized_sha256 = sha256_file(normalized_path)
+        if normalized_sha256 != record.get('normalized_sha256'):
+            raise RuntimeError(
+                'legacy normalized DOCX hash mismatch: {}'.format(
+                    normalized_path
+                )
+            )
+        artifacts[doc_id] = LegacyDocArtifact(
+            conversion_run_id=conversion_run_id,
+            normalized_path=normalized_path,
+            normalized_sha256=normalized_sha256,
+            libreoffice_version=libreoffice_version,
+        )
+    return artifacts
 
 
 def load_run_plan(config_path: Path) -> RunPlan:
@@ -181,42 +386,20 @@ def load_run_plan(config_path: Path) -> RunPlan:
         runs_root,
         'run root',
     )
-
-    samples = []
-    seen_ids = set()
-    for item in project.get('samples', []):
-        item = _require_mapping(item, 'project.samples item')
-        sample_id = str(item['id'])
-        if sample_id in seen_ids:
-            raise ValueError('duplicate sample id: {}'.format(sample_id))
-        seen_ids.add(sample_id)
-        source_path = _ensure_child(
-            input_root / str(item['path']),
-            input_root,
-            'sample source',
-        )
-        if not source_path.is_file():
-            raise FileNotFoundError(source_path)
-        if source_path.suffix.lower() != '.pdf':
-            raise ValueError(
-                'Python API v0.01 retry accepts PDF only: {}'.format(
-                    source_path
-                )
-            )
-        samples.append(
-            SampleConfig(
-                sample_id=sample_id,
-                source_path=source_path,
-                purpose=str(item.get('purpose', '')),
-            )
-        )
-    if not samples:
-        raise ValueError('project.samples must not be empty')
+    sources = _load_sources(project, input_root)
+    legacy_doc_artifacts = _load_legacy_doc_artifacts(
+        project,
+        sources,
+        runs_root,
+    )
 
     hardware = _require_mapping(project.get('hardware'), 'project.hardware')
     cpu_threads = int(hardware['cpu_threads'])
-    if cpu_threads < 1:
-        raise ValueError('project.hardware.cpu_threads must be positive')
+    logical_cores = int(hardware['logical_cpu_cores'])
+    if cpu_threads < 1 or cpu_threads > logical_cores:
+        raise ValueError(
+            'project.hardware.cpu_threads must be between 1 and logical cores'
+        )
     if project.get('short_source_names') is not True:
         raise ValueError('project.short_source_names must be true on Windows')
     execution = _require_mapping(
@@ -238,28 +421,57 @@ def load_run_plan(config_path: Path) -> RunPlan:
         'docling.runtime_settings',
     )
     runtime_settings = AppSettings.model_validate(runtime_raw)
-    pipeline_raw = _require_mapping(
-        docling.get('pdf_pipeline_options', {}),
-        'docling.pdf_pipeline_options',
-    )
-    pdf_pipeline_options = _validate_pdf_pipeline_options(pipeline_raw)
-
     converter = _require_mapping(
         docling.get('document_converter', {}),
         'docling.document_converter',
     )
-    if converter.get('allowed_formats') != ['pdf']:
+    allowed_format_names = list(converter.get('allowed_formats', []))
+    if len(set(allowed_format_names)) != len(allowed_format_names):
+        raise ValueError('docling.document_converter.allowed_formats has duplicates')
+    required_formats = {
+        'pdf' if source.source_format == 'pdf' else 'docx'
+        for source in sources
+    }
+    if set(allowed_format_names) != required_formats:
         raise ValueError(
-            'docling.document_converter.allowed_formats must be [pdf] in v0.01'
+            'allowed_formats must match parser inputs: {}'.format(
+                sorted(required_formats)
+            )
         )
-    pdf_format = _require_mapping(
-        converter.get('pdf_format_option', {}),
-        'docling.document_converter.pdf_format_option',
-    )
-    if pdf_format.get('pipeline_class') != 'standard':
-        raise ValueError('only the standard PDF pipeline is supported in v0.01')
-    if pdf_format.get('backend') not in {'pypdfium2', 'docling_parse'}:
-        raise ValueError('unsupported PDF backend')
+
+    pdf_pipeline_options = None
+    if 'pdf' in required_formats:
+        pdf_format = _require_mapping(
+            converter.get('pdf_format_option', {}),
+            'docling.document_converter.pdf_format_option',
+        )
+        if pdf_format.get('pipeline_class') != 'standard':
+            raise ValueError('PDF pipeline_class must be standard')
+        if pdf_format.get('backend') not in {'pypdfium2', 'docling_parse'}:
+            raise ValueError('unsupported PDF backend')
+        pdf_pipeline_options = _validate_pdf_pipeline_options(
+            _require_mapping(
+                docling.get('pdf_pipeline_options', {}),
+                'docling.pdf_pipeline_options',
+            )
+        )
+
+    word_pipeline_options = None
+    if 'docx' in required_formats:
+        word_format = _require_mapping(
+            converter.get('word_format_option', {}),
+            'docling.document_converter.word_format_option',
+        )
+        if word_format.get('pipeline_class') != 'simple':
+            raise ValueError('Word pipeline_class must be simple')
+        if word_format.get('backend') != 'msword':
+            raise ValueError('Word backend must be msword')
+        word_pipeline_options = _validate_word_pipeline_options(
+            _require_mapping(
+                docling.get('word_pipeline_options', {}),
+                'docling.word_pipeline_options',
+            )
+        )
 
     convert_options = _require_mapping(
         docling.get('convert_options', {}),
@@ -301,9 +513,11 @@ def load_run_plan(config_path: Path) -> RunPlan:
         input_root=input_root,
         runs_root=runs_root,
         run_root=run_root,
-        samples=tuple(samples),
+        sources=sources,
+        legacy_doc_artifacts=legacy_doc_artifacts,
         runtime_settings=runtime_settings,
         pdf_pipeline_options=pdf_pipeline_options,
+        word_pipeline_options=word_pipeline_options,
     )
 
 
@@ -311,6 +525,7 @@ def docling_schema_snapshot() -> dict[str, Any]:
     return {
         'docling_version': version('docling'),
         'pdf_pipeline_options': PdfPipelineOptions.model_json_schema(),
+        'word_pipeline_options': ConvertPipelineOptions.model_json_schema(),
         'convert_options': list(
             inspect.signature(DocumentConverter.convert).parameters
         ),
@@ -329,6 +544,12 @@ def docling_schema_snapshot() -> dict[str, Any]:
 
 
 def plan_summary(plan: RunPlan) -> dict[str, Any]:
+    format_counts = _source_format_counts(plan.sources)
+    largest = sorted(
+        plan.sources,
+        key=lambda source: source.size_bytes,
+        reverse=True,
+    )[:5]
     return {
         'check': 'passed',
         'pipeline_version': plan.project['pipeline_version'],
@@ -340,18 +561,34 @@ def plan_summary(plan: RunPlan) -> dict[str, Any]:
         'hardware': plan.project['hardware'],
         'docling_version': version('docling'),
         'docling_runtime_settings': plan.runtime_settings.model_dump(mode='json'),
-        'pdf_pipeline_options': plan.pdf_pipeline_options.model_dump(
-            mode='json', serialize_as_any=True
-        ),
-        'samples': [
+        'source_counts': format_counts,
+        'source_size_bytes': sum(source.size_bytes for source in plan.sources),
+        'legacy_docx_count': len(plan.legacy_doc_artifacts),
+        'largest_sources': [
             {
-                'id': sample.sample_id,
-                'path': sample.source_path.relative_to(REPO_ROOT).as_posix(),
-                'size_bytes': sample.source_path.stat().st_size,
-                'purpose': sample.purpose,
+                'id': source.doc_id,
+                'format': source.source_format,
+                'path': source.source_path.relative_to(REPO_ROOT).as_posix(),
+                'size_bytes': source.size_bytes,
             }
-            for sample in plan.samples
+            for source in largest
         ],
+        'pdf_pipeline_options': (
+            plan.pdf_pipeline_options.model_dump(
+                mode='json',
+                serialize_as_any=True,
+            )
+            if plan.pdf_pipeline_options is not None
+            else None
+        ),
+        'word_pipeline_options': (
+            plan.word_pipeline_options.model_dump(
+                mode='json',
+                serialize_as_any=True,
+            )
+            if plan.word_pipeline_options is not None
+            else None
+        ),
     }
 
 

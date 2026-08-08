@@ -1,0 +1,58 @@
+run_id: sample-standard-advanced-001
+input_root: Data/originalData/docANDpdf
+runs_root: Data/staging/document_preprocessing/runs
+soffice_path: 'D:/Program Files/LibreOffice/program/soffice.com'
+docling_path: 'D:/ProgramData/miniconda3/envs/CPIPC/Scripts/docling.exe'
+pipeline_version: 0.1.0-preview
+schema_version: docling-native-2.118
+encoding: utf-8
+
+settings:
+  pipeline: standard
+  ocr: false
+  ocr_fallback: rapidocr
+  ocr_fallback_mode: pdf_aware_layout_regions
+  tables: true
+  table_mode: accurate
+  enrich_formula: true
+  enrich_picture_classes: true
+  enrich_picture_description: false
+  enrich_chart_extraction: false
+  enrich_code: false
+  image_export_mode: referenced
+  outputs:
+    - md
+    - json
+    - html
+  json_ensure_ascii: false
+  json_indent: 2
+  device: cuda
+  compile_torch_models: false
+  pdf_backend: pypdfium2
+  page_batch_size: 2
+  num_threads: 4
+  document_timeout_seconds: 1800
+  profiling: true
+  remote_services: false
+  external_plugins: false
+  abort_on_error: false
+
+samples:
+  - id: '385'
+    path: '385_国家金融监督管理总局关于印发《保险公司资本保证金管理办法》的通知_附件：保险公司资本保证金处置情况报告表.doc'
+    purpose: legacy-doc-table
+  - id: '387'
+    path: '387_国家金融监督管理总局办公厅_关于印发《保险集团集中度风险监管指引》的通知_附件1：集中度风险指标统计表.doc'
+    purpose: legacy-doc-statistical-table
+  - id: '397'
+    path: '397_财政部办公厅_金融监管总局办公厅关于印发《银行函证工作操作指引》的通知_银行函证工作操作指引.docx'
+    purpose: docx-structure-and-table
+  - id: '417'
+    path: '417_商业银行资本管理办法_附件22：商业银行信息披露内容和要求.docx'
+    purpose: long-table-heavy-docx
+  - id: '398'
+    path: '398_财政部办公厅_金融监管总局办公厅关于印发《银行函证工作操作指引》的通知_银行函证工作操作指引.pdf'
+    purpose: same-source-pdf-page-evidence
+  - id: '399'
+    path: '399_国家金融监督管理总局_关于印发非银行金融机构行政许可事项_申请材料目录及格式要求的通知_非银行金融机构行政许可事项申请材料目录及格式要求（2023年版）.pdf'
+    purpose: long-regulatory-pdf

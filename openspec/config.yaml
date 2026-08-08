@@ -1,0 +1,65 @@
+schema: spec-driven
+
+context: |
+  Project: Trusted RAG Q&A for banking regulations and statistical reports.
+  Current milestone: build a reproducible document-preprocessing pipeline before
+  implementing chunking, indexing, retrieval, answer generation, or a UI.
+  Source corpus: Data/originalData. Source files are immutable competition data.
+  Document parser: Docling. Legacy .doc files require a separate LibreOffice
+  conversion step before parsing. Markdown is a review artifact; structured JSON
+  is the canonical machine-readable artifact for downstream processing.
+  Future modules must remain independently replaceable: document preprocessing,
+  spreadsheet fact extraction, chunking, indexing, retrieval, answer generation,
+  evaluation, and application services.
+
+rules:
+  proposal:
+    - State goals, non-goals, affected data, and downstream impact explicitly.
+    - Keep document preprocessing separate from Excel fact extraction and RAG.
+  specs:
+    - Use SHALL for normative requirements and Given/When/Then scenarios.
+    - Cover source immutability, traceability, versioning, failure isolation, and QA.
+  design:
+    - Define directory ownership, artifact schemas, naming, versioning, and extension seams.
+    - Treat generated data as reproducible artifacts rather than source-controlled documents.
+  tasks:
+    - Validate a representative sample before running the complete corpus.
+    - Give every task a verifiable completion condition.
+
+operations:
+  apply:
+    guidance:
+      - Never write into or modify Data/originalData.
+      - Do not store generated corpus artifacts under openspec or docs.
+      - Keep parser-specific code behind a stable preprocessing interface.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

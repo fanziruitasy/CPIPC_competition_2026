@@ -1,0 +1,26 @@
+project:
+  config_version: '0.01'
+  pipeline_version: '0.01'
+  description: 'Normalize every legacy DOC source to DOCX without modifying originalData.'
+  run_id: libreoffice-docx-v0.01-full-001
+  input_root: Data/originalData/docANDpdf
+  runs_root: Data/staging/document_preprocessing/runs
+  recursive: true
+  include_extension: .doc
+  exclude_name_prefixes:
+    - '~$'
+  short_source_names: true
+  json_serialization:
+    encoding: utf-8
+    ensure_ascii: false
+    indent: 2
+
+libreoffice:
+  executable: 'D:/Program Files/LibreOffice/program/soffice.com'
+  headless: true
+  target_format: docx
+  export_filter: 'Office Open XML Text'
+  isolated_user_profile: true
+  timeout_seconds: null
+  automatic_retries: 0
+  overwrite_existing: false

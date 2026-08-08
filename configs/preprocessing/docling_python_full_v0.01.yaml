@@ -1,0 +1,170 @@
+project:
+  config_version: '0.01'
+  pipeline_version: '0.01'
+  description: 'Full-corpus Docling Python API run for all 111 DOC, DOCX, and PDF sources.'
+  run_id: docling-python-v0.01-full-001
+  input_root: Data/originalData/docANDpdf
+  runs_root: Data/staging/document_preprocessing/runs
+  outputs:
+    - md
+    - json
+    - html
+  short_source_names: true
+  json_serialization:
+    encoding: utf-8
+    ensure_ascii: false
+    indent: 2
+  execution:
+    reuse_converter: true
+    timeout_seconds: null
+    automatic_retries: 0
+  source_selection:
+    mode: all
+    recursive: true
+    include_extensions:
+      - doc
+      - docx
+      - pdf
+    exclude_name_prefixes:
+      - '~$'
+    order_by: size_ascending
+    expected_counts:
+      doc: 32
+      docx: 34
+      pdf: 45
+      total: 111
+  legacy_doc_conversion:
+    run_id: libreoffice-docx-v0.01-full-001
+    require_success_manifest: true
+  hardware:
+    physical_cpu_cores: 8
+    logical_cpu_cores: 16
+    cpu_threads: 12
+    torch_interop_threads: 2
+    cuda_required: true
+    expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
+    expected_vram_gb: 8
+
+docling:
+  expected_version: 2.118.0
+  parameter_schema: configs/preprocessing/schemas/docling-2.118.0-pdf-pipeline-options.schema.json
+
+  runtime_settings:
+    perf:
+      doc_batch_size: 1
+      doc_batch_concurrency: 1
+      page_batch_size: 8
+      page_batch_concurrency: 1
+      elements_batch_size: 32
+    debug:
+      visualize_cells: false
+      visualize_ocr: false
+      visualize_layout: false
+      visualize_raw_layout: false
+      visualize_tables: false
+      profile_pipeline_timings: true
+      debug_output_path: Data/staging/document_preprocessing/runs/docling-python-v0.01-full-001/debug
+    inference:
+      compile_torch_models: false
+
+  document_converter:
+    allowed_formats:
+      - pdf
+      - docx
+    pdf_format_option:
+      pipeline_class: standard
+      backend: pypdfium2
+      backend_options: null
+    word_format_option:
+      pipeline_class: simple
+      backend: msword
+      backend_options: null
+
+  pdf_pipeline_options:
+    document_timeout: null
+    accelerator_options:
+      num_threads: 12
+      device: cuda
+      cuda_use_flash_attention2: false
+    enable_remote_services: false
+    allow_external_plugins: false
+    artifacts_path: null
+    do_picture_classification: true
+    picture_classification_options:
+      engine_options:
+        engine_type: transformers
+        top_k: null
+        torch_dtype: null
+        compile_model: false
+    do_picture_description: false
+    do_chart_extraction: false
+    images_scale: 2.0
+    generate_page_images: true
+    generate_picture_images: true
+    do_table_structure: true
+    do_ocr: false
+    do_code_enrichment: false
+    do_formula_enrichment: true
+    force_backend_text: false
+    table_structure_options:
+      do_cell_matching: true
+      mode: accurate
+    layout_options:
+      keep_empty_clusters: false
+      skip_cell_assignment: false
+      create_orphan_clusters: true
+      engine_options:
+        engine_type: transformers
+        score_threshold: 0.3
+        torch_dtype: null
+        compile_model: false
+    generate_table_images: false
+    generate_parsed_pages: false
+    ocr_batch_size: 4
+    layout_batch_size: 8
+    table_batch_size: 6
+    batch_polling_interval_seconds: 0.5
+    queue_max_size: 160
+    stage_shutdown_timeout_seconds: 30.0
+
+  word_pipeline_options:
+    document_timeout: null
+    accelerator_options:
+      num_threads: 12
+      device: cuda
+      cuda_use_flash_attention2: false
+    enable_remote_services: false
+    allow_external_plugins: false
+    artifacts_path: null
+    do_picture_classification: true
+    picture_classification_options:
+      engine_options:
+        engine_type: transformers
+        top_k: null
+        torch_dtype: null
+        compile_model: false
+    do_picture_description: false
+    do_chart_extraction: false
+
+  convert_options:
+    raises_on_error: false
+
+  export:
+    image_mode: referenced
+    markdown:
+      strict_text: false
+      escape_html: true
+      escaping_underscores: true
+      include_annotations: true
+      compact_tables: false
+      enable_chart_tables: true
+      traverse_pictures: false
+    json:
+      indent: 2
+      coord_precision: null
+      confid_precision: null
+    html:
+      formula_to_mathml: true
+      html_lang: zh-CN
+      split_page_view: false
+      include_annotations: true

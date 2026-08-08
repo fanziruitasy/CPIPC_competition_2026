@@ -1,0 +1,47 @@
+run_id: sample-standard-advanced-pdf-retry-001
+input_root: Data/originalData/docANDpdf
+runs_root: Data/staging/document_preprocessing/runs
+soffice_path: 'D:/Program Files/LibreOffice/program/soffice.com'
+docling_path: 'D:/ProgramData/miniconda3/envs/CPIPC/Scripts/docling.exe'
+pipeline_version: 0.1.0-preview
+schema_version: docling-native-2.118
+encoding: utf-8
+
+settings:
+  pipeline: standard
+  ocr: false
+  ocr_fallback: rapidocr
+  ocr_fallback_mode: pdf_aware_layout_regions
+  tables: true
+  table_mode: accurate
+  enrich_formula: true
+  enrich_picture_classes: true
+  enrich_picture_description: false
+  enrich_chart_extraction: false
+  enrich_code: false
+  image_export_mode: referenced
+  outputs:
+    - md
+    - json
+    - html
+  json_ensure_ascii: false
+  json_indent: 2
+  device: cuda
+  compile_torch_models: false
+  pdf_backend: pypdfium2
+  stage_pdf_with_short_name: true
+  page_batch_size: 2
+  num_threads: 4
+  document_timeout_seconds: 5400
+  profiling: true
+  remote_services: false
+  external_plugins: false
+  abort_on_error: false
+
+samples:
+  - id: '398'
+    path: '398_财政部办公厅_金融监管总局办公厅关于印发《银行函证工作操作指引》的通知_银行函证工作操作指引.pdf'
+    purpose: same-source-pdf-page-evidence-retry
+  - id: '399'
+    path: '399_国家金融监督管理总局_关于印发非银行金融机构行政许可事项_申请材料目录及格式要求的通知_非银行金融机构行政许可事项申请材料目录及格式要求（2023年版）.pdf'
+    purpose: long-regulatory-pdf-retry
