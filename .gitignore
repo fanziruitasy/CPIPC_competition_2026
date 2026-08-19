@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Local database/vector-store runtime locks
+*.lock
+
 # Ruff stuff:
 .ruff_cache/
 
