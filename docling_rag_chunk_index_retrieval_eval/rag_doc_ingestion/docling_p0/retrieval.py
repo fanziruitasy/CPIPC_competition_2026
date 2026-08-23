@@ -24,6 +24,13 @@ DEFAULT_QDRANT_PATH = DEFAULT_BUILD_ROOT / "indexes" / "qdrant_local"
 
 TABLE_HINT_RE = re.compile(r"(表|报表|单元格|数值|金额|余额|比例|比率|增长|下降|同比|环比|合计|小计|平均|最大|最小|多少|第.+行|第.+列|取值|填报)")
 HINT_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]{2,}")
+TITLE_HINT_RE = re.compile(r"《([^》]{2,120})》")
+DOCNO_HINT_RE = re.compile(r"[\u4e00-\u9fa5]{0,12}[〔\[]\d{4}[〕\]][^\s，。；;、]{0,30}?号")
+ATTACHMENT_HINT_RE = re.compile(r"(?:附件|附录)\s*[0-9一二三四五六七八九十]+[：:、]?\s*[\u4e00-\u9fa5A-Za-z0-9（）()《》\-—_]{0,80}")
+ORG_HINT_RE = re.compile(
+    r"(国家金融监督管理总局|中国银保监会|银保监会|中国人民银行|财政部|国务院|"
+    r"国家知识产权局|国家版权局|金融监管总局)"
+)
 
 
 @dataclass
@@ -84,6 +91,42 @@ def _hint_terms(source_hint: str | None) -> list[str]:
     terms = HINT_TOKEN_RE.findall(text)
     long_terms = [t for t in terms if len(t) >= 3]
     return list(dict.fromkeys(long_terms or terms))
+
+
+def _hint_phrases(source_hint: str | None) -> list[str]:
+    if not source_hint:
+        return []
+    phrases: list[str] = []
+    for part in re.split(r"\s*\|\s*|\n", source_hint):
+        text = compact_text(part).lower()
+        text = re.sub(r"\.(docx?|pdf|xlsx?)\b", "", text)
+        text = text.strip("《》 ")
+        if len(text) >= 4 and text not in phrases:
+            phrases.append(text)
+    return phrases
+
+
+def extract_source_hints_from_question(question: str) -> list[str]:
+    """Extract only user-visible source hints from the question text.
+
+    This is deliberately limited to text that appears in the query itself:
+    document titles in 《...》, regulatory document numbers, attachment labels,
+    and agency names. QA-only fields such as source_title/file_label/evidence
+    must not be passed here.
+    """
+    text = compact_text(question or "")
+    hints: list[str] = []
+    for pattern in [TITLE_HINT_RE, DOCNO_HINT_RE, ATTACHMENT_HINT_RE, ORG_HINT_RE]:
+        for match in pattern.finditer(text):
+            value = match.group(1) if pattern is TITLE_HINT_RE or pattern is ORG_HINT_RE else match.group(0)
+            value = compact_text(value)
+            if value and value not in hints:
+                hints.append(value)
+    return hints
+
+
+def make_visible_source_hint(question: str) -> str:
+    return " | ".join(extract_source_hints_from_question(question))
 
 
 def _preferred_profile(source_type_hint: str | None) -> str | None:
@@ -407,11 +450,16 @@ class HybridRetriever:
 
     def source_hint_search(self, source_hint: str | None, query: str, limit: int, source_type_hint: str | None = None) -> list[RetrievalHit]:
         terms = _hint_terms(source_hint)
-        if not terms:
+        phrases = _hint_phrases(source_hint)
+        if not terms and not phrases:
             return []
+        exact_doc_ids: list[str] = []
         doc_scores: list[tuple[int, str]] = []
         for doc_id, doc in self.docs_by_id.items():
             hay = " ".join(str(doc.get(key) or "") for key in ["title", "file_name", "source_path", "doc_id"]).lower()
+            if phrases and any(phrase in hay for phrase in phrases):
+                exact_doc_ids.append(doc_id)
+                continue
             score = sum(1 for term in terms if term in hay)
             if _is_preferred_profile(
                 {
@@ -425,7 +473,7 @@ class HybridRetriever:
             if score:
                 doc_scores.append((score, doc_id))
         doc_scores.sort(key=lambda x: x[0], reverse=True)
-        target_doc_ids = {doc_id for _, doc_id in doc_scores[:5]}
+        target_doc_ids = set(exact_doc_ids or [doc_id for _, doc_id in doc_scores[:5]])
         if not target_doc_ids:
             return []
         q_terms = set(sparse_tokens(query))
@@ -593,6 +641,93 @@ class HybridRetriever:
             "sparse_hits": [h.to_dict() for h in sparse_hits],
             "duckdb_hits": [h.to_dict() for h in duckdb_hits],
             "source_hint_hits": [h.to_dict() for h in source_hint_hits],
+            "fused_hits": [h.to_dict() for h in fused],
+            "reranked_hits": [h.to_dict() for h in reranked],
+            "rerank": rerank_info,
+        }
+
+    def retrieve_mcq(
+        self,
+        question: str,
+        options: dict[str, str],
+        source_hint: str | None = None,
+        source_type_hint: str | None = None,
+        dense_top_k: int = 10,
+        sparse_top_k: int = 10,
+        table_top_k: int = 10,
+        rrf_top_k: int = 30,
+        rerank_top_k: int = 5,
+    ) -> dict[str, Any]:
+        visible_hint = source_hint or make_visible_source_hint(question)
+        if not visible_hint:
+            fallback = self.retrieve(
+                question,
+                source_hint=None,
+                source_hint_query=None,
+                source_type_hint=source_type_hint,
+                dense_top_k=dense_top_k,
+                sparse_top_k=sparse_top_k,
+                table_top_k=table_top_k,
+                rrf_top_k=rrf_top_k,
+                rerank_top_k=rerank_top_k,
+            )
+            fallback["retrieval_mode"] = "global_mixed_no_visible_target"
+            fallback["option_evidence_pack"] = {}
+            return fallback
+
+        errors: dict[str, str] = {}
+        option_pack: dict[str, list[dict[str, Any]]] = {}
+        hit_lists: list[list[RetrievalHit]] = []
+        try:
+            question_hits = self.source_hint_search(
+                visible_hint,
+                question,
+                max(dense_top_k, sparse_top_k),
+                source_type_hint=source_type_hint,
+            )
+        except Exception as exc:
+            question_hits = []
+            errors["target_question"] = str(exc)[:500]
+        hit_lists.append(question_hits)
+
+        for key, option in options.items():
+            option_query = f"{question}\n{key}. {option}"
+            try:
+                option_hits = self.source_hint_search(
+                    visible_hint,
+                    option_query,
+                    max(dense_top_k, sparse_top_k),
+                    source_type_hint=source_type_hint,
+                )
+            except Exception as exc:
+                option_hits = []
+                errors[f"option_{key}"] = str(exc)[:500]
+            hit_lists.append(option_hits)
+            option_pack[key] = [h.to_dict() for h in option_hits[:rerank_top_k]]
+
+        fused = self.rrf_fuse(hit_lists)
+        fused = self.apply_source_hint_boost(fused, visible_hint, source_type_hint)[:rrf_top_k]
+        rerank_query = "\n".join([question] + [f"{k}. {v}" for k, v in options.items() if v])
+        reranked, rerank_info = self.rerank(rerank_query, fused, rerank_top_k, source_hint=visible_hint)
+        reranked = self.order_evidence(reranked, visible_hint, source_type_hint)
+        return {
+            "query": question,
+            "retrieval_mode": "target_doc_option_pack",
+            "route": {
+                "use_dense": False,
+                "use_sparse": False,
+                "use_duckdb": False,
+                "query_type": "mcq_policy_fact",
+                "target_doc_only": True,
+            },
+            "source_hint": visible_hint,
+            "source_type_hint": source_type_hint,
+            "errors": errors,
+            "dense_hits": [],
+            "sparse_hits": [],
+            "duckdb_hits": [],
+            "source_hint_hits": [h.to_dict() for h in question_hits],
+            "option_evidence_pack": option_pack,
             "fused_hits": [h.to_dict() for h in fused],
             "reranked_hits": [h.to_dict() for h in reranked],
             "rerank": rerank_info,

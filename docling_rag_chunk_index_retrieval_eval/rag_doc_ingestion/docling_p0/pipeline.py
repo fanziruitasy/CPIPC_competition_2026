@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from .chunking import chunk_modal_elements, chunk_tables, chunk_text_elements
-from .indexes import build_bm25_index, build_hash_vector_index, build_table_sqlite
 from .normalize import normalize_docling_document
 from .utils import ensure_dir, now_iso, read_json, read_jsonl, safe_rel_uri, write_json, write_jsonl
 
@@ -32,8 +31,34 @@ class DoclingP0Config:
     hard_limit: int = 650
     table_target_limit: int = 550
     table_hard_limit: int = 700
-    vector_dim: int = 256
-    skip_legacy_indexes: bool = False
+    embedding_backend: str = "api"
+    collection: str = "rag_chunks_docling0816"
+    rebuild_indexes: bool = False
+
+
+@dataclass
+class PipelineUnits:
+    all_records: list[dict[str, Any]]
+    selected_records: list[dict[str, Any]]
+    raw_manifest_rows: list[dict[str, Any]]
+
+
+@dataclass
+class NormalizedBundle:
+    documents: list[dict[str, Any]]
+    elements: list[dict[str, Any]]
+    table_cells: list[dict[str, Any]]
+    exclusions: list[dict[str, Any]]
+    errors: list[dict[str, Any]]
+
+
+@dataclass
+class ChunkBundle:
+    chunks: list[dict[str, Any]]
+    parent_chunks: list[dict[str, Any]]
+    table_elements: list[dict[str, Any]]
+    figure_elements: list[dict[str, Any]]
+    formula_elements: list[dict[str, Any]]
 
 
 def load_run_manifest(run_root: Path, source_profile: str) -> dict[str, dict[str, Any]]:
@@ -135,82 +160,143 @@ def build_table_element_records(elements: list[dict[str, Any]]) -> list[dict[str
     return [e for e in elements if e.get("element_type") == "table"]
 
 
-def run_pipeline(config: DoclingP0Config) -> dict[str, Any]:
+def build_units(config: DoclingP0Config) -> PipelineUnits:
+    """Stage 1: discover Docling outputs and freeze the raw unit manifest."""
     docling_root = config.docling_root
     output_root = config.output_root
     ensure_dir(output_root)
-    ensure_dir(output_root / "indexes")
 
     all_records = discover_inputs(docling_root)
     selected_records = select_records(config, all_records)
+    raw_manifest_rows = write_raw_manifest(selected_records, docling_root, output_root)
+    return PipelineUnits(
+        all_records=all_records,
+        selected_records=selected_records,
+        raw_manifest_rows=raw_manifest_rows,
+    )
 
+
+def build_normalized(config: DoclingP0Config, units: PipelineUnits) -> NormalizedBundle:
+    """Stage 2: normalize profile-specific Docling JSON into a stable element contract."""
+    docling_root = config.docling_root
     documents: list[dict[str, Any]] = []
     elements: list[dict[str, Any]] = []
     table_cells: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
-    chunks: list[dict[str, Any]] = []
-    parent_chunks: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
-    raw_manifest_rows = write_raw_manifest(selected_records, docling_root, output_root)
-
-    for record in selected_records:
+    for record in units.selected_records:
         doc_id = str(record["doc_id"])
         try:
             doc_json = read_json(Path(record["json_path"]))
             doc_record, doc_elements, doc_table_cells, doc_exclusions = normalize_docling_document(
                 doc_json, record, docling_root, Path(record.get("run_root") or docling_root)
             )
-            doc_text_chunks, doc_parent_chunks = chunk_text_elements(
-                doc_record, doc_elements, soft_limit=config.soft_limit, hard_limit=config.hard_limit
-            )
-            doc_modal_chunks = chunk_modal_elements(doc_record, doc_elements, start_order=len(doc_text_chunks))
-            doc_table_chunks = chunk_tables(
-                doc_record,
-                build_table_element_records(doc_elements),
-                doc_table_cells,
-                target_limit=config.table_target_limit,
-                hard_limit=config.table_hard_limit,
-                start_order=len(doc_text_chunks) + len(doc_modal_chunks),
-            )
             documents.append(doc_record)
             elements.extend(doc_elements)
             table_cells.extend(doc_table_cells)
             exclusions.extend(doc_exclusions)
-            chunks.extend(doc_text_chunks + doc_modal_chunks + doc_table_chunks)
-            parent_chunks.extend(doc_parent_chunks)
         except Exception as exc:  # pragma: no cover - report path
             errors.append({"doc_id": doc_id, "source_profile": record.get("source_profile"), "error": repr(exc)})
+    return NormalizedBundle(
+        documents=documents,
+        elements=elements,
+        table_cells=table_cells,
+        exclusions=exclusions,
+        errors=errors,
+    )
+
+
+def build_chunks(config: DoclingP0Config, normalized: NormalizedBundle) -> ChunkBundle:
+    """Stage 3: chunk normalized text/table/figure/formula records."""
+    by_doc: dict[str, dict[str, Any]] = {str(doc["doc_id"]): doc for doc in normalized.documents}
+    elements_by_doc: dict[str, list[dict[str, Any]]] = {}
+    cells_by_doc: dict[str, list[dict[str, Any]]] = {}
+    for element in normalized.elements:
+        elements_by_doc.setdefault(str(element.get("doc_id")), []).append(element)
+    for cell in normalized.table_cells:
+        cells_by_doc.setdefault(str(cell.get("doc_id")), []).append(cell)
+
+    chunks: list[dict[str, Any]] = []
+    parent_chunks: list[dict[str, Any]] = []
+    for doc_id in sorted(by_doc, key=lambda x: int(x) if x.isdigit() else x):
+        doc_record = by_doc[doc_id]
+        doc_elements = elements_by_doc.get(doc_id, [])
+        doc_table_cells = cells_by_doc.get(doc_id, [])
+        doc_text_chunks, doc_parent_chunks = chunk_text_elements(
+            doc_record, doc_elements, soft_limit=config.soft_limit, hard_limit=config.hard_limit
+        )
+        doc_modal_chunks = chunk_modal_elements(doc_record, doc_elements, start_order=len(doc_text_chunks))
+        doc_table_chunks = chunk_tables(
+            doc_record,
+            build_table_element_records(doc_elements),
+            doc_table_cells,
+            target_limit=config.table_target_limit,
+            hard_limit=config.table_hard_limit,
+            start_order=len(doc_text_chunks) + len(doc_modal_chunks),
+        )
+        chunks.extend(doc_text_chunks + doc_modal_chunks + doc_table_chunks)
+        parent_chunks.extend(doc_parent_chunks)
 
     for idx, chunk in enumerate(chunks):
         chunk["global_order"] = idx
 
-    table_elements = build_table_element_records(elements)
-    figure_elements = [e for e in elements if e.get("element_type") == "figure"]
-    formula_elements = [e for e in elements if e.get("element_type") == "formula"]
+    return ChunkBundle(
+        chunks=chunks,
+        parent_chunks=parent_chunks,
+        table_elements=build_table_element_records(normalized.elements),
+        figure_elements=[e for e in normalized.elements if e.get("element_type") == "figure"],
+        formula_elements=[e for e in normalized.elements if e.get("element_type") == "formula"],
+    )
 
-    write_jsonl(output_root / "normalized_documents.jsonl", documents)
-    write_jsonl(output_root / "normalized_elements.jsonl", elements)
-    write_jsonl(output_root / "normalized_tables.jsonl", table_elements)
-    write_jsonl(output_root / "figures.jsonl", figure_elements)
-    write_jsonl(output_root / "formulas.jsonl", formula_elements)
-    write_jsonl(output_root / "table_cells.jsonl", table_cells)
-    write_jsonl(output_root / "chunks.jsonl", chunks)
-    write_jsonl(output_root / "parent_chunks.jsonl", parent_chunks)
-    write_jsonl(output_root / "exclusions.jsonl", exclusions)
-    write_jsonl(output_root / "errors.jsonl", errors)
 
-    bm25_stats: dict[str, Any] = {"skipped": True}
-    vector_stats: dict[str, Any] = {"skipped": True}
-    sqlite_stats: dict[str, Any] = {"skipped": True}
-    if not config.skip_legacy_indexes:
-        bm25_stats = build_bm25_index(chunks, output_root / "indexes" / "bm25")
-        vector_stats = build_hash_vector_index(chunks, output_root / "indexes" / "vector", dim=config.vector_dim)
-        sqlite_stats = build_table_sqlite(
-            documents, elements, table_cells, chunks, output_root / "indexes" / "sqlite" / "rag_tables.sqlite"
-        )
+def write_normalized_and_chunks(
+    output_root: Path,
+    normalized: NormalizedBundle,
+    chunked: ChunkBundle,
+) -> None:
+    """Stage 4a: write JSONL/Object-Store artifacts used by retrieval and audit."""
+    write_jsonl(output_root / "normalized_documents.jsonl", normalized.documents)
+    write_jsonl(output_root / "normalized_elements.jsonl", normalized.elements)
+    write_jsonl(output_root / "normalized_tables.jsonl", chunked.table_elements)
+    write_jsonl(output_root / "figures.jsonl", chunked.figure_elements)
+    write_jsonl(output_root / "formulas.jsonl", chunked.formula_elements)
+    write_jsonl(output_root / "table_cells.jsonl", normalized.table_cells)
+    write_jsonl(output_root / "chunks.jsonl", chunked.chunks)
+    write_jsonl(output_root / "parent_chunks.jsonl", chunked.parent_chunks)
+    write_jsonl(output_root / "exclusions.jsonl", normalized.exclusions)
+    write_jsonl(output_root / "errors.jsonl", normalized.errors)
 
-    token_counts = sorted([c.get("token_count", 0) for c in chunks if isinstance(c.get("token_count"), int)])
+
+def describe_index_rebuild(config: DoclingP0Config) -> dict[str, Any]:
+    """Stage 4b: declare the P2 index contract without rebuilding by default."""
+    output_root = config.output_root
+    return {
+        "enabled": bool(config.rebuild_indexes),
+        "status": "planned_only" if not config.rebuild_indexes else "external_entrypoint_required",
+        "entrypoint": "rag_doc_ingestion/scripts/run_docling_p2_index.py",
+        "build_root": str(output_root),
+        "duckdb_path": str(output_root / "indexes" / "duckdb" / "rag_tables.duckdb"),
+        "qdrant_path": str(output_root / "indexes" / "qdrant_local"),
+        "collection": config.collection,
+        "embedding_backend": config.embedding_backend,
+        "note": (
+            "P0 pipeline only writes normalized/chunk artifacts. "
+            "DuckDB and Qdrant are rebuilt by run_docling_p2_index.py when explicitly required."
+        ),
+    }
+
+
+def run_pipeline(config: DoclingP0Config) -> dict[str, Any]:
+    output_root = config.output_root
+    ensure_dir(output_root)
+
+    units = build_units(config)
+    normalized = build_normalized(config, units)
+    chunked = build_chunks(config, normalized)
+    write_normalized_and_chunks(output_root, normalized, chunked)
+
+    token_counts = sorted([c.get("token_count", 0) for c in chunked.chunks if isinstance(c.get("token_count"), int)])
 
     def percentile(p: float) -> int:
         if not token_counts:
@@ -221,37 +307,36 @@ def run_pipeline(config: DoclingP0Config) -> dict[str, Any]:
     report = {
         "schema_version": "docling_p0_build_report.v2",
         "created_at": now_iso(),
-        "docling_root": str(docling_root),
+        "pipeline_stages": ["units", "normalized", "chunking", "index_rebuild"],
+        "docling_root": str(config.docling_root),
         "output_root": str(output_root),
         "sample_size": config.sample_size,
-        "selected_doc_ids": [r["doc_id"] for r in selected_records],
-        "raw_manifest_count": len(raw_manifest_rows),
-        "doc_count": len(documents),
-        "available_doc_count": len(all_records),
-        "error_count": len(errors),
-        "element_count": len(elements),
-        "chunk_count": len(chunks),
-        "parent_chunk_count": len(parent_chunks),
-        "table_count": len(table_elements),
-        "figure_count": len(figure_elements),
-        "formula_count": len(formula_elements),
-        "table_cell_count": len(table_cells),
-        "exclusion_count": len(exclusions),
-        "source_profile_counts": count_by(documents, "source_profile"),
-        "quality_counts": count_by(elements, "quality_status"),
-        "chunk_type_counts": count_by(chunks, "chunk_type"),
-        "element_type_counts": count_by(elements, "element_type"),
+        "selected_doc_ids": [r["doc_id"] for r in units.selected_records],
+        "raw_manifest_count": len(units.raw_manifest_rows),
+        "doc_count": len(normalized.documents),
+        "available_doc_count": len(units.all_records),
+        "error_count": len(normalized.errors),
+        "element_count": len(normalized.elements),
+        "chunk_count": len(chunked.chunks),
+        "parent_chunk_count": len(chunked.parent_chunks),
+        "table_count": len(chunked.table_elements),
+        "figure_count": len(chunked.figure_elements),
+        "formula_count": len(chunked.formula_elements),
+        "table_cell_count": len(normalized.table_cells),
+        "exclusion_count": len(normalized.exclusions),
+        "source_profile_counts": count_by(normalized.documents, "source_profile"),
+        "quality_counts": count_by(normalized.elements, "quality_status"),
+        "chunk_type_counts": count_by(chunked.chunks, "chunk_type"),
+        "element_type_counts": count_by(normalized.elements, "element_type"),
         "token_p50": percentile(0.50),
         "token_p90": percentile(0.90),
         "token_p99": percentile(0.99),
         "oversized_chunks": [
             {"chunk_id": c["chunk_id"], "token_count": c.get("token_count"), "chunk_type": c.get("chunk_type")}
-            for c in chunks if (c.get("token_count") or 0) > config.hard_limit
+            for c in chunked.chunks if (c.get("token_count") or 0) > config.hard_limit
         ][:50],
         "known_issue_doc_ids": KNOWN_ISSUE_DOC_IDS,
-        "bm25": bm25_stats,
-        "vector": vector_stats,
-        "sqlite": sqlite_stats,
+        "index_rebuild": describe_index_rebuild(config),
         "outputs": {
             "raw_manifest": str(output_root / "raw_manifest.jsonl"),
             "normalized_documents": str(output_root / "normalized_documents.jsonl"),
@@ -286,8 +371,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--doc-ids", nargs="*", default=None, help="Explicit doc ids, e.g. 385 361 388 389")
     parser.add_argument("--soft-limit", type=int, default=450)
     parser.add_argument("--hard-limit", type=int, default=650)
-    parser.add_argument("--vector-dim", type=int, default=256)
-    parser.add_argument("--skip-legacy-indexes", action="store_true", help="Only write JSONL/Object Store files; skip old local BM25/hash-vector/SQLite indexes.")
+    parser.add_argument("--embedding-backend", default="api")
+    parser.add_argument("--collection", default="rag_chunks_docling0816")
+    parser.add_argument(
+        "--rebuild-indexes",
+        action="store_true",
+        help="Only records the P2 index rebuild intent. Use run_docling_p2_index.py for the actual rebuild.",
+    )
     return parser.parse_args(argv)
 
 
@@ -301,8 +391,9 @@ def main(argv: list[str] | None = None) -> int:
         doc_ids=args.doc_ids,
         soft_limit=args.soft_limit,
         hard_limit=args.hard_limit,
-        vector_dim=args.vector_dim,
-        skip_legacy_indexes=args.skip_legacy_indexes,
+        embedding_backend=args.embedding_backend,
+        collection=args.collection,
+        rebuild_indexes=args.rebuild_indexes,
     )
     report = run_pipeline(config)
     print(json.dumps({

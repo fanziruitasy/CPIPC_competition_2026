@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 
 from .index_build import DEFAULT_BUILD_ROOT, load_dotenv
-from .retrieval import DEFAULT_COLLECTION, DEFAULT_ENV_PATH, HybridRetriever
+from .retrieval import DEFAULT_COLLECTION, DEFAULT_ENV_PATH, HybridRetriever, make_visible_source_hint
 from .utils import compact_text, ensure_dir, write_json, write_jsonl
 
 DEFAULT_QA_PATH = Path(r"D:\金融科技大赛\Code\data\QA数据.xlsx")
@@ -129,12 +129,7 @@ def make_retrieval_query(row: dict[str, Any], include_options: bool = True) -> s
 
 
 def make_source_hint(row: dict[str, Any]) -> str:
-    parts = [row.get("source_title"), row.get("file_label")]
-    seen = []
-    for part in parts:
-        if part and part not in seen:
-            seen.append(part)
-    return " | ".join(seen)
+    return make_visible_source_hint(row.get("question") or "")
 
 
 def chat_completion_url(base_url: str) -> str:
@@ -159,7 +154,13 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
         return None
 
 
-def call_llm_choice(row: dict[str, Any], hits: list[dict[str, Any]], env: dict[str, str], force_choice: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+def call_llm_choice(
+    row: dict[str, Any],
+    hits: list[dict[str, Any]],
+    env: dict[str, str],
+    force_choice: bool = False,
+    option_evidence_pack: dict[str, list[dict[str, Any]]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     api_key = env.get("DASHSCOPE_API_KEY", "")
     base_url = env.get("DASHSCOPE_BASE_URL", "")
     model = env.get("LLM_MODEL", "")
@@ -173,6 +174,18 @@ def call_llm_choice(row: dict[str, Any], hits: list[dict[str, Any]], env: dict[s
             f"title={payload.get('doc_title')}; page={payload.get('page_start')}-{payload.get('page_end')}\n"
             f"{compact_text(hit.get('content') or '')[:1600]}"
         )
+    option_blocks: list[str] = []
+    for key in OPTION_KEYS:
+        pack_hits = (option_evidence_pack or {}).get(key) or []
+        blocks = []
+        for idx, hit in enumerate(pack_hits[:4], start=1):
+            payload = hit.get("payload") or {}
+            blocks.append(
+                f"  ({idx}) chunk_id={hit.get('chunk_id')}; doc_id={hit.get('doc_id')}; source={hit.get('source')}; "
+                f"title={payload.get('doc_title')}; page={payload.get('page_start')}-{payload.get('page_end')}\n"
+                f"  {compact_text(hit.get('content') or '')[:900]}"
+            )
+        option_blocks.append(f"{key}. {row['options'].get(key, '')}\n" + ("\n".join(blocks) if blocks else "  未检索到该选项的目标文档内证据。"))
     options_text = "\n".join(f"{k}. {row['options'].get(k, '')}" for k in OPTION_KEYS)
     source_hint = make_source_hint(row)
     answer_schema = "A/B/C/D" if force_choice else "A/B/C/D/INSUFFICIENT"
@@ -200,6 +213,9 @@ def call_llm_choice(row: dict[str, Any], hits: list[dict[str, Any]], env: dict[s
 
 检索证据：
 {chr(10).join(evidence_blocks)}
+
+逐选项目标文档内证据：
+{chr(10).join(option_blocks)}
 
 输出格式：
 {{"option_checks":{{"A":{{"status":"support/refute/unknown","evidence_chunk_ids":["..."],"reason":"..."}},"B":{{"status":"support/refute/unknown","evidence_chunk_ids":["..."],"reason":"..."}},"C":{{"status":"support/refute/unknown","evidence_chunk_ids":["..."],"reason":"..."}},"D":{{"status":"support/refute/unknown","evidence_chunk_ids":["..."],"reason":"..."}}}},"answer":"{answer_schema}","confidence":0.0,"evidence_chunk_ids":["..."],"reason":"一句话说明"}}
@@ -304,6 +320,32 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "critical_number_date_org_docno_error_rate_max": 0.05,
             "out_of_scope_refusal_rate_min": 0.80,
         },
+        "quantitative_metrics": {
+            "policy_fact_accuracy": {
+                "value": correct / total if total else 0,
+                "target": 0.85,
+                "status": "pass" if total and correct / total >= 0.85 else "not_enough_data",
+                "note": "当前离线选择题口径；资料库内 MCQ 可使用二次强制择优。",
+            },
+            "evidence_citation_hit_rate": {
+                "value": evidence_hits / total if total else 0,
+                "target": 0.90,
+                "status": "pass" if total and evidence_hits / total >= 0.90 else "not_enough_data",
+                "note": "使用 QA gold 的 source_title/file_label/evidence 仅做评分，不进入检索。",
+            },
+            "critical_entity_error_rate": {
+                "value": None,
+                "target": 0.05,
+                "status": "not_evaluated",
+                "note": "需要开放式答案或结构化答案日志，抽取数字、日期、机构名称、文号后与引用证据核验。",
+            },
+            "out_of_scope_refusal_or_clarification_rate": {
+                "value": None,
+                "target": 0.80,
+                "status": "not_evaluated",
+                "note": "需要另行构造资料库外/依据不足评测集；trusted_qa/out_of_scope_eval 禁止二次强制选择。",
+            },
+        },
     }
     for field, bucket_name in [("source_type", "by_source_type"), ("qa_type", "by_qa_type")]:
         groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -319,7 +361,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def run_eval(args: argparse.Namespace) -> dict[str, Any]:
-    ensure_dir(args.out_dir)
+    if not args.dry_run:
+        ensure_dir(args.out_dir)
     env = load_dotenv(args.env_path)
     only_ids = load_wrong_ids(args.only_wrong_from)
     rows = load_qa_rows(args.qa_path, args.sheet_name, args.source_types, args.limit, include_ids=only_ids)
@@ -339,25 +382,37 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     report_path = args.out_dir / "qa_eval_report.json"
     try:
         for row_idx, row in enumerate(rows, start=1):
-            query = make_retrieval_query(row, include_options=args.options_in_retrieval_query)
             source_hint = make_source_hint(row)
-            source_hint_query = make_retrieval_query(row, include_options=True)
-            retrieval = retriever.retrieve(
-                query,
-                source_hint=source_hint,
-                source_hint_query=source_hint_query,
-                source_type_hint=row["source_type"],
-                dense_top_k=args.dense_top_k,
-                sparse_top_k=args.sparse_top_k,
-                table_top_k=args.table_top_k,
-                rerank_top_k=args.evidence_top_k,
-            )
+            if args.answer_mode == "force_choice_eval":
+                retrieval = retriever.retrieve_mcq(
+                    row["question"],
+                    row["options"],
+                    source_hint=source_hint,
+                    source_type_hint=row["source_type"],
+                    dense_top_k=args.dense_top_k,
+                    sparse_top_k=args.sparse_top_k,
+                    table_top_k=args.table_top_k,
+                    rerank_top_k=args.evidence_top_k,
+                )
+            else:
+                retrieval = retriever.retrieve(
+                    row["question"],
+                    source_hint=source_hint or None,
+                    source_hint_query=row["question"],
+                    source_type_hint=row["source_type"],
+                    dense_top_k=args.dense_top_k,
+                    sparse_top_k=args.sparse_top_k,
+                    table_top_k=args.table_top_k,
+                    rerank_top_k=args.evidence_top_k,
+                )
             hits = retrieval["reranked_hits"]
+            option_evidence_pack = retrieval.get("option_evidence_pack") or {}
             last_err = None
             llm_key = cache_key(
                 {
-                    "schema": "qa_choice_v7_target_evidence_required_profile_boost",
+                    "schema": "qa_choice_v8_question_visible_source_option_pack",
                     "model": env.get("LLM_MODEL"),
+                    "answer_mode": args.answer_mode,
                     "row_id": row["id"],
                     "question": row["question"],
                     "options": row["options"],
@@ -371,10 +426,24 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                         }
                         for h in hits
                     ],
+                    "option_evidence_pack": {
+                        key: [
+                            {
+                                "chunk_id": h.get("chunk_id"),
+                                "doc_id": h.get("doc_id"),
+                                "content": compact_text(h.get("content") or "")[:900],
+                            }
+                            for h in option_evidence_pack.get(key, [])[:4]
+                        ]
+                        for key in OPTION_KEYS
+                    },
                 }
             )
             cached = llm_cache.get(llm_key)
-            if cached:
+            if args.skip_llm:
+                prediction = {"answer": "INSUFFICIENT", "confidence": 0.0, "evidence_chunk_ids": [], "reason": "skip_llm dry retrieval check"}
+                llm_info = {"backend": "skipped"}
+            elif cached:
                 prediction = cached["prediction"]
                 llm_info = dict(cached.get("llm") or {})
                 llm_info["cache_hit"] = True
@@ -382,10 +451,12 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 for attempt in range(int(env.get("LLM_MAX_RETRIES", "2") or 2)):
                     try:
-                        prediction, llm_info = call_llm_choice(row, hits, env)
-                        append_llm_cache(llm_cache_path, llm_key, prediction, llm_info)
+                        prediction, llm_info = call_llm_choice(row, hits, env, option_evidence_pack=option_evidence_pack)
+                        if not args.dry_run:
+                            append_llm_cache(llm_cache_path, llm_key, prediction, llm_info)
                         llm_cache[llm_key] = {"prediction": prediction, "llm": llm_info}
-                        llm_cache_writes += 1
+                        if not args.dry_run:
+                            llm_cache_writes += 1
                         break
                     except Exception as exc:
                         last_err = str(exc)
@@ -398,12 +469,14 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             pred_answer = str(prediction.get("answer") or "").upper()
             hit_ok = evidence_hit(row, hits)
             second_pass_info: dict[str, Any] | None = None
-            if args.force_choice_on_insufficient and pred_answer == "INSUFFICIENT" and hit_ok and hits:
+            force_allowed = args.answer_mode == "force_choice_eval" and args.force_choice_on_insufficient
+            if force_allowed and pred_answer == "INSUFFICIENT" and hit_ok and hits:
                 second_pass_count += 1
                 force_key = cache_key(
                     {
-                        "schema": "qa_choice_v7_force_choice_target_evidence_required",
+                        "schema": "qa_choice_v8_force_choice_question_visible_source_option_pack",
                         "model": env.get("LLM_MODEL"),
+                        "answer_mode": args.answer_mode,
                         "row_id": row["id"],
                         "question": row["question"],
                         "options": row["options"],
@@ -417,10 +490,24 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                             }
                             for h in hits
                         ],
+                        "option_evidence_pack": {
+                            key: [
+                                {
+                                    "chunk_id": h.get("chunk_id"),
+                                    "doc_id": h.get("doc_id"),
+                                    "content": compact_text(h.get("content") or "")[:900],
+                                }
+                                for h in option_evidence_pack.get(key, [])[:4]
+                            ]
+                            for key in OPTION_KEYS
+                        },
                     }
                 )
                 cached_force = llm_cache.get(force_key)
-                if cached_force:
+                if args.skip_llm:
+                    prediction = {"answer": "INSUFFICIENT", "confidence": 0.0, "evidence_chunk_ids": [], "reason": "skip_llm dry retrieval check"}
+                    llm_info = {"backend": "skipped_force_choice"}
+                elif cached_force:
                     prediction = cached_force["prediction"]
                     llm_info = dict(cached_force.get("llm") or {})
                     llm_info["cache_hit"] = True
@@ -429,10 +516,12 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                     force_err = None
                     for attempt in range(int(env.get("LLM_MAX_RETRIES", "2") or 2)):
                         try:
-                            prediction, llm_info = call_llm_choice(row, hits, env, force_choice=True)
-                            append_llm_cache(llm_cache_path, force_key, prediction, llm_info)
+                            prediction, llm_info = call_llm_choice(row, hits, env, force_choice=True, option_evidence_pack=option_evidence_pack)
+                            if not args.dry_run:
+                                append_llm_cache(llm_cache_path, force_key, prediction, llm_info)
                             llm_cache[force_key] = {"prediction": prediction, "llm": llm_info}
-                            llm_cache_writes += 1
+                            if not args.dry_run:
+                                llm_cache_writes += 1
                             break
                         except Exception as exc:
                             force_err = str(exc)
@@ -462,6 +551,24 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                 "prediction": prediction,
                 "llm": llm_info,
                 "second_pass": second_pass_info,
+                "answer_mode": args.answer_mode,
+                "visible_source_hint": source_hint,
+                "retrieval_mode": retrieval.get("retrieval_mode"),
+                "option_evidence_pack": {
+                    key: [
+                        {
+                            "rank": idx,
+                            "chunk_id": h.get("chunk_id"),
+                            "doc_id": h.get("doc_id"),
+                            "source": h.get("source"),
+                            "score": h.get("score"),
+                            "payload": h.get("payload"),
+                            "content_preview": compact_text(h.get("content") or "")[:300],
+                        }
+                        for idx, h in enumerate(option_evidence_pack.get(key, [])[:4], start=1)
+                    ]
+                    for key in OPTION_KEYS
+                },
                 "retrieval_route": retrieval["route"],
                 "retrieval_errors": retrieval.get("errors", {}),
                 "rerank": retrieval["rerank"],
@@ -480,10 +587,11 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                 ],
             }
             details.append(detail)
-            write_jsonl(detail_path, details)
             partial_report = summarize(details)
             partial_report.update({"completed": row_idx, "planned_total": len(rows), "status": "running", "llm_cache_hits": llm_cache_hits, "llm_cache_writes": llm_cache_writes, "second_pass_count": second_pass_count})
-            write_json(report_path, partial_report)
+            if not args.dry_run:
+                write_jsonl(detail_path, details)
+                write_json(report_path, partial_report)
             print(f"[{row_idx}/{len(rows)}] {row['id']} pred={pred_answer} gold={row['answer']} correct={detail['is_correct']} failure={detail['failure_type']}", flush=True)
     finally:
         retriever.close()
@@ -497,6 +605,8 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             "only_wrong_from": str(args.only_wrong_from) if args.only_wrong_from else None,
             "only_wrong_count": len(only_ids) if only_ids is not None else None,
             "no_lexical_final": args.no_lexical_final,
+            "answer_mode": args.answer_mode,
+            "dry_run": args.dry_run,
             "collection": args.collection,
             "embedding_backend": args.embedding_backend,
             "llm_cache_path": str(llm_cache_path),
@@ -505,8 +615,9 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             "second_pass_count": second_pass_count,
         }
     )
-    write_jsonl(detail_path, details)
-    write_json(report_path, report)
+    if not args.dry_run:
+        write_jsonl(detail_path, details)
+        write_json(report_path, report)
     return report
 
 
@@ -528,6 +639,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--sparse-top-k", type=int, default=10)
     p.add_argument("--table-top-k", type=int, default=10)
     p.add_argument("--evidence-top-k", type=int, default=5)
+    p.add_argument("--answer-mode", choices=["force_choice_eval", "trusted_qa", "out_of_scope_eval"], default="force_choice_eval")
+    p.add_argument("--dry-run", action="store_true", help="Run in memory and print summary without writing eval JSONL/report files.")
+    p.add_argument("--skip-llm", action="store_true", help="Only verify retrieval/evidence-pack construction; do not call or cache LLM results.")
     p.add_argument("--force-choice-on-insufficient", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--options-in-retrieval-query", action="store_true", help="Include A/B/C/D options in the retrieval query. Disabled by default to avoid distractor contamination.")
     return p.parse_args(argv)
