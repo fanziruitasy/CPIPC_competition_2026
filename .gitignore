@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Trusted RAG generated artifacts
+nfra_trusted_rag/output/
+nfra_trusted_rag/output_*/
+nfra_trusted_rag/reports/
+nfra_trusted_rag/.schema_test_*/
+nfra_trusted_rag/.build_test_*/
+nfra_trusted_rag/data/
+nfra_trusted_rag/*.duckdb
+nfra_trusted_rag/*.xls
+nfra_trusted_rag/*.xlsx
