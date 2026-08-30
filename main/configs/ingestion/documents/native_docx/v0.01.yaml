@@ -1,0 +1,101 @@
+schema_version: "0.01"
+source_profile: native-docx
+parser_name: docling
+parser_version: 2.120.1
+
+outputs: [json, md, html]
+json_serialization:
+  encoding: utf-8
+  ensure_ascii: false
+  indent: 2
+
+runtime:
+  reuse_converter: true
+  timeout_seconds: null
+  automatic_retries: 0
+  cpu_threads: 16
+  torch_interop_threads: 2
+  device: cuda
+  perf:
+    doc_batch_size: 1
+    doc_batch_concurrency: 1
+    page_batch_size: 8
+    page_batch_concurrency: 1
+    elements_batch_size: 32
+  debug:
+    visualize_cells: false
+    visualize_ocr: false
+    visualize_layout: false
+    visualize_raw_layout: false
+    visualize_tables: false
+    profile_pipeline_timings: true
+  compile_torch_models: false
+
+docling:
+  allowed_formats: [docx]
+  pipeline_class: simple
+  backend: msword
+  backend_options:
+    enable_remote_fetch: false
+    enable_local_fetch: false
+    render_chart_images: true
+  pipeline_options:
+    document_timeout: null
+    enable_remote_services: true
+    allow_external_plugins: false
+    artifacts_path: null
+    do_picture_classification: true
+    picture_classification_options:
+      engine_type: transformers
+      top_k: null
+      torch_dtype: null
+      compile_model: false
+    do_picture_description: true
+    picture_description_options:
+      kind: api
+      batch_size: 8
+      scale: 2.0
+      picture_area_threshold: 0.0
+      classification_allow: null
+      classification_deny: [icon, logo, page_thumbnail]
+      classification_min_confidence: 0.5
+      timeout_seconds: 120.0
+      concurrency: 2
+      prompt: >-
+        请忠实解析这张来自银行监管制度或统计报表文档的图片。先判断它是普通图片、
+        文字截图、表格、公式、统计图还是流程图；再完整提取可见的中文、数字、单位、
+        公式符号、表头及关键关系。只描述图片中能够确认的信息，不推测缺失内容。
+        输出适合检索的简体中文；如果无法辨认，请明确写“无法可靠识别”并说明原因。
+      provenance: docling-inline-api-v0.01
+    do_chart_extraction: false
+
+export:
+  image_mode: referenced
+  markdown:
+    strict_text: false
+    escape_html: true
+    escaping_underscores: true
+    include_annotations: true
+    compact_tables: false
+    enable_chart_tables: true
+    traverse_pictures: false
+  html:
+    formula_to_mathml: true
+    html_lang: zh-CN
+    split_page_view: false
+    include_annotations: true
+
+enrichment:
+  ocr_mode: disabled
+  detect_pictures: true
+  detect_formulas: true
+  connection:
+    provider_env: VL_PROVIDER
+    model_env: VL_MODEL
+    base_url_env: DASHSCOPE_BASE_URL
+    api_key_env: DASHSCOPE_API_KEY
+    timeout_seconds_env: VL_TIMEOUT_SECONDS
+    max_tokens_env: VL_MAX_TOKENS
+    temperature_env: VL_TEMPERATURE
+    top_p_env: VL_TOP_P
+  fallback_mode: none

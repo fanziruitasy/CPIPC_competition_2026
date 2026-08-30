@@ -1,0 +1,16 @@
+schema_version: evaluation_run_config.v1
+run_id: official-qa-evaluation-v0.01-004
+snapshot_id: index-snapshot-v0.01-003
+dataset_run_id: official-qa-v0.01-001
+dataset_root: data_runtime/evaluation_datasets
+runtime_root: data_runtime/evaluation_runs
+query_config: configs/retrieval/v0.01.yaml
+expected_question_count: 300
+profiles:
+  - dense_only
+  - bm25_only
+  - dense_bm25
+option_resolver:
+  model_env: LLM_MODEL
+  timeout_seconds: 60
+  max_retries: 2

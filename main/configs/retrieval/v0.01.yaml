@@ -1,0 +1,37 @@
+schema_version: retrieval_config.v1
+knowledge_base_id: nfra-regulations
+snapshot:
+  run_root: data_runtime/index_runs/index-snapshot-v0.01-003
+  qdrant_url: http://127.0.0.1:6333
+  collection_alias: trusted_rag_documents_current
+  duckdb_uri: facts.duckdb
+  corpus_root: data_runtime/corpus_runs/unified-corpus-v0.01-003
+query_planning:
+  rule_confidence_threshold: 0.72
+  model_enabled: true
+  model_env: LLM_MODEL
+  timeout_seconds: 60
+  max_retries: 2
+retrieval:
+  default_profile: dense_bm25
+  profiles:
+    dense_only: true
+    bm25_only: true
+    dense_bm25: true
+  recall_top_k: 40
+  rrf_k: 60
+rerank:
+  enabled: true
+  model: qwen3-rerank
+  top_k: 8
+  timeout_seconds: 60
+  max_retries: 2
+  retry_backoff_seconds: 2
+  instruct: 检索与银行业监管制度、统计指标问题最相关且可直接作为证据的内容
+answering:
+  model_env: LLM_MODEL
+  timeout_seconds: 120
+  max_retries: 2
+  max_tokens: 1200
+audit:
+  directory: data_runtime/query_runs

@@ -1,0 +1,12 @@
+schema_version: "0.01"
+
+libreoffice:
+  # Windows 开发机通过环境变量 LIBREOFFICE_EXECUTABLE 覆盖；容器使用 /usr/bin/soffice。
+  executable: /usr/bin/soffice
+  headless: true
+  target_format: docx
+  export_filter: Office Open XML Text
+  isolated_user_profile: true
+  timeout_seconds: null
+  automatic_retries: 0
+  overwrite_existing: false

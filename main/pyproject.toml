@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools==81.0.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trusted-rag-bank-regulations"
+version = "0.1.0"
+description = "面向银行业监管制度与统计报表的可信 RAG 系统"
+readme = "README.md"
+requires-python = "==3.12.*"
+license = { text = "Proprietary" }
+authors = [
+    { name = "CPIPC Competition Team" },
+]
+dependencies = [
+    "dashscope==1.27.0",
+    "duckdb==1.5.5",
+    "docling==2.120.1",
+    "fastapi==0.116.1",
+    "jieba==0.42.1",
+    "openpyxl==3.1.5",
+    "openai==3.3.1",
+    "pandas==3.0.5",
+    "pydantic==2.13.4",
+    "pyarrow==23.0.1",
+    "python-dotenv==1.2.2",
+    "python-multipart==0.0.20",
+    "pytz==2025.2",
+    "qdrant-client==1.19.0",
+    "PyYAML==6.0.3",
+    "uvicorn==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy==1.18.2",
+    "pytest==8.4.2",
+    "ruff==0.16.3",
+    "types-PyYAML==6.0.12.20250915",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "D", "E", "F", "I", "RUF", "SIM", "UP"]
+# 中文文档字符串使用全角标点；D400 和 RUF001/RUF002 的英文标点规则不适用。
+ignore = ["D203", "D213", "D400", "RUF001", "RUF002"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "source_characterization: 依赖仓库外层来源代码或现有解析产物的迁移特征测试",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+pretty = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["trusted_rag.ingestion.spreadsheets.cleaners.*"]
+ignore_errors = true

@@ -1,0 +1,36 @@
+schema_version: evaluation_run_config.v1
+run_id: representative-qa-evaluation-v0.01-001
+snapshot_id: index-snapshot-v0.01-003
+dataset_run_id: official-qa-v0.01-001
+dataset_root: data_runtime/evaluation_datasets
+runtime_root: data_runtime/evaluation_runs
+query_config: configs/retrieval/v0.01.yaml
+expected_question_count: 18
+selected_profile: dense_bm25
+profiles:
+  - dense_only
+  - bm25_only
+  - dense_bm25
+question_ids:
+  - Q001
+  - Q002
+  - Q035
+  - Q036
+  - Q068
+  - Q070
+  - Q101
+  - Q102
+  - Q103
+  - Q104
+  - Q105
+  - Q106
+  - Q201
+  - Q202
+  - Q203
+  - Q204
+  - Q205
+  - Q206
+option_resolver:
+  model_env: LLM_MODEL
+  timeout_seconds: 60
+  max_retries: 2

@@ -1,0 +1,13 @@
+schema_version: "0.01"
+
+pipeline: knowledge-ingestion
+config_version: "0.01"
+
+source_registration:
+  recursive: true
+  # 正式构建保持 null；公共样例可在命令行传入 --limit-per-format 1。
+  limit_per_format: null
+
+runtime:
+  runs_root: data_runtime/ingestion_runs
+  jobs_root: data_runtime/ingestion_jobs

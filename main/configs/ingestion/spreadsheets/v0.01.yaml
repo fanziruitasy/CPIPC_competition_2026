@@ -1,0 +1,22 @@
+schema_version: spreadsheet_ingestion_config.v1
+config_version: v0.01
+run_id: excel-regression-v0.01-001
+source_root: ../Data/03-金融大模型与智能体赛道-南京银行-面向银行业监管制度与统计报表的可信RAG问答/nfra_page_attachments_500
+runtime_root: data_runtime/ingestion_runs
+soffice_path: D:/Program Files/LibreOffice/program/soffice.com
+knowledge_base_id: nfra-regulations
+mode: representative
+representative_file_ids:
+  - "001"
+  - "002"
+  - "003"
+  - "004"
+  - "005"
+  - "010"
+  - "132"
+  - "391"
+  - "394"
+max_facts_per_chunk: 20
+conversion:
+  export_filter: Calc MS Excel 2007 XML
+  timeout_seconds: null

@@ -1,0 +1,5 @@
+schema_version: evaluation_dataset_config.v1
+run_id: official-qa-v0.01-001
+source_workbook: Data/03-金融大模型与智能体赛道-南京银行-面向银行业监管制度与统计报表的可信RAG问答/QA数据.xlsx
+runtime_root: data_runtime/evaluation_datasets
+expected_question_count: 300

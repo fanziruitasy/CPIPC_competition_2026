@@ -1,0 +1,22 @@
+schema_version: "0.01"
+
+application:
+  name: trusted-rag
+  environment: development
+  timezone: Asia/Shanghai
+
+runtime:
+  data_root: data_runtime
+  config_version: "0.01"
+
+logging:
+  level: INFO
+  json_output: true
+  include_context: true
+
+services:
+  dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  dashscope_native_base_url: https://dashscope.aliyuncs.com/api/v1
+  qdrant_url: http://localhost:6333
+  rag_db_path: data_runtime/duckdb/nfra.duckdb
+

@@ -1,0 +1,177 @@
+schema_version: "0.01"
+source_profile: pdf
+parser_name: docling
+parser_version: 2.120.1
+
+outputs: [json, md, html]
+json_serialization:
+  encoding: utf-8
+  ensure_ascii: false
+  indent: 2
+
+runtime:
+  converter_lifetime: per-document
+  timeout_seconds: null
+  automatic_retries: 0
+  cpu_threads: 12
+  torch_interop_threads: 2
+  device: cuda
+  perf:
+    doc_batch_size: 1
+    doc_batch_concurrency: 1
+    page_batch_size: 8
+    page_batch_concurrency: 1
+    elements_batch_size: 32
+  debug:
+    visualize_cells: false
+    visualize_ocr: false
+    visualize_layout: false
+    visualize_raw_layout: false
+    visualize_tables: false
+    profile_pipeline_timings: true
+  compile_torch_models: false
+
+backend_routing:
+  default_backend: pypdfium2
+  rotated_page_backend: docling_parse
+
+docling:
+  allowed_formats: [pdf]
+  pipeline_class: standard
+  convert_options:
+    raises_on_error: false
+  pipeline_options:
+    document_timeout: null
+    enable_remote_services: true
+    allow_external_plugins: false
+    artifacts_path: null
+    do_picture_classification: true
+    picture_classification_options:
+      engine_options:
+        engine_type: transformers
+        top_k: null
+        torch_dtype: null
+        compile_model: false
+    do_picture_description: true
+    picture_description_options:
+      kind: api
+      batch_size: 4
+      scale: 2.0
+      picture_area_threshold: 0.0
+      classification_allow: null
+      classification_deny: [icon, logo, page_thumbnail]
+      classification_min_confidence: 0.5
+      timeout: 120.0
+      concurrency: 2
+      prompt: >-
+        请忠实解析这张来自银行监管制度或统计报表PDF的图片。先输出“类型”和
+        “识别状态”，类型可为统计图、表格截图、流程图、示意图、公式图片、
+        普通图片或装饰图片，识别状态可为有效、无意义或无法可靠识别。
+        对统计图提取标题、坐标轴、图例、系列、单位、可见数值、趋势和比较关系；
+        对表格截图保持行列关系并提取表头、数字和单位；对流程图按箭头顺序描述节点；
+        对公式忠实转写符号、上下标、分式及变量含义；对其他图片提取全部可见文字和
+        与监管内容有关的信息。只输出图片中可以确认的内容，不补造不可见数值，
+        无法辨认时明确说明原因。最后给出一段适合RAG检索的简体中文描述。
+      provenance: docling-pdf-picture-api-v0.01
+      usage_response_key: usage
+      params: {}
+    do_chart_extraction: false
+    images_scale: 2.0
+    generate_page_images: true
+    generate_picture_images: true
+    do_table_structure: true
+    do_ocr: false
+    do_code_enrichment: false
+    do_formula_enrichment: true
+    force_backend_text: false
+    code_formula_options:
+      engine_options:
+        engine_type: api
+        timeout: 120.0
+        concurrency: 2
+        params: {}
+      model_spec:
+        name: remote-regulatory-formula-v0.01
+        default_repo_id: remote-api
+        revision: main
+        prompt: >-
+          你是银行监管PDF的数学公式转写器。请只根据图片忠实识别公式，输出规范LaTeX，
+          保留上下标、分式、根号、求和、积分、集合、希腊字母、括号、比较符号和编号。
+          不解释、不推导、不补全图片中不存在的内容；无法可靠识别的局部使用
+          \text{[无法识别]} 标记。如果图片不是公式，输出 \text{[非公式]}。
+        response_format: plaintext
+        supported_engines: [api]
+        engine_overrides: {}
+        api_overrides: {}
+        trust_remote_code: false
+        stop_strings: []
+        temperature: 0.0
+        max_new_tokens: 2048
+        extra_generation_config: {}
+      scale: 2.0
+      max_size: null
+      extract_code: false
+      extract_formulas: true
+    table_structure_options:
+      do_cell_matching: true
+      mode: accurate
+    layout_options:
+      keep_empty_clusters: false
+      skip_cell_assignment: false
+      create_orphan_clusters: true
+      engine_options:
+        engine_type: transformers
+        score_threshold: 0.3
+        torch_dtype: null
+        compile_model: false
+    heading_hierarchy_options:
+      enabled: true
+      use_bookmarks: true
+      use_numbering: true
+      use_style: true
+      use_font_style: true
+      style_size_tolerance: 0.05
+      numbering_schemes: null
+      max_level: 6
+      bookmark_match_threshold: 0.8
+    generate_table_images: false
+    generate_parsed_pages: false
+    ocr_batch_size: 4
+    layout_batch_size: 8
+    table_batch_size: 6
+    batch_polling_interval_seconds: 0.5
+    queue_max_size: 160
+    stage_shutdown_timeout_seconds: 30.0
+
+export:
+  image_mode: referenced
+  markdown:
+    strict_text: false
+    escape_html: true
+    escaping_underscores: true
+    include_annotations: true
+    compact_tables: false
+    enable_chart_tables: true
+    traverse_pictures: false
+  json:
+    indent: 2
+    coord_precision: null
+    confid_precision: null
+  html:
+    formula_to_mathml: true
+    html_lang: zh-CN
+    split_page_view: false
+    include_annotations: true
+
+enrichment:
+  detect_pictures: true
+  detect_formulas: true
+  connection:
+    provider_env: VL_PROVIDER
+    model_env: VL_MODEL
+    base_url_env: DASHSCOPE_BASE_URL
+    api_key_env: DASHSCOPE_API_KEY
+    timeout_seconds_env: VL_TIMEOUT_SECONDS
+    max_tokens_env: VL_MAX_TOKENS
+    temperature_env: VL_TEMPERATURE
+    top_p_env: VL_TOP_P

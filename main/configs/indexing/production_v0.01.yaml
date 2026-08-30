@@ -1,0 +1,27 @@
+schema_version: index_build_config.v1
+snapshot_id: index-snapshot-v0.01-003
+knowledge_base_id: nfra-regulations
+corpus_run_id: unified-corpus-v0.01-003
+excel_run_id: excel-regression-v0.01-002
+runtime_root: data_runtime/index_runs
+vector_batch_size: 64
+qdrant:
+  url: http://127.0.0.1:6333
+  timeout_seconds: 120
+  collection: trusted_rag_documents_v0_01_003
+  alias: trusted_rag_documents_current
+embedding:
+  provider: dashscope
+  model: text-embedding-v3
+  dimensions: 1024
+  batch_size: 10
+  timeout_seconds: 60
+  max_retries: 3
+  retry_backoff_seconds: 2
+  price_cny_per_million_tokens: null
+bm25:
+  tokenizer: jieba
+  lexicon: resources/lexicons/regulatory_terms_v0.01.txt
+  k1: 1.2
+  b: 0.75
+  max_features: 80000

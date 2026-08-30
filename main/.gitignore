@@ -1,0 +1,28 @@
+# Python 构建与缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# 本地环境和开发工具
+.env
+.venv/
+.idea/
+.vscode/
+
+# 运行时数据、数据库和模型缓存
+data_runtime/
+*.duckdb
+*.duckdb.wal
+qdrant_storage/
+model_cache/
+
+# 临时文件与日志
+*.log
+tmp/
+.tmp/
+

@@ -1,0 +1,59 @@
+name: trusted-rag-bank-regulations
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${QDRANT_HOST_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_HOST_PORT:-6334}:6334"
+    volumes:
+      - ./data_runtime/qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/6333"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  rag-api:
+    image: trusted-rag/rag-api:0.1.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: rag-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      RAG_CONFIG_PATH: configs/retrieval/v0.01.yaml
+      RAG_API_HOST: 0.0.0.0
+      RAG_API_PORT: 8000
+      RAG_API_WORKERS: 1
+    ports:
+      - "127.0.0.1:${RAG_API_HOST_PORT:-8000}:8000"
+    volumes:
+      - ./data_runtime:/workspace/main/data_runtime
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+  knowledge-builder:
+    image: trusted-rag/knowledge-builder:0.1.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: knowledge-builder
+    profiles: ["tools"]
+    env_file:
+      - ../.env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      LIBREOFFICE_EXECUTABLE: /usr/bin/soffice
+    volumes:
+      - ../Data:/workspace/Data:ro
+      - ./data_runtime:/workspace/main/data_runtime
+    depends_on:
+      qdrant:
+        condition: service_healthy
