@@ -1,7 +1,9 @@
+duckdb>=1.5
+fastapi>=0.110
+openpyxl>=3.1
 pandas>=2.0
 pyarrow>=14.0
-openpyxl>=3.1
-fastapi>=0.110
-uvicorn>=0.27
 pydantic>=2.0
-duckdb>=1.5
+pywin32>=306; platform_system == "Windows"
+xlrd>=2.0
+uvicorn>=0.27

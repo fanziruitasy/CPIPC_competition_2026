@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -66,25 +65,23 @@ REDUCED_SUM_INSURED_PRODUCTS = {"motor_vehicle", "liability", "agriculture"}
 REDUCED_POLICY_PRODUCTS = {"motor_vehicle", "liability"}
 
 
-def keys(metric: str, products: set[str]) -> set[tuple[str, str]]:
-    return {(metric, "all")} | {(metric, product) for product in products}
-
-
 LEGACY_KEYS = (
-    keys("original_premium_income", LEGACY_PREMIUM_PRODUCTS)
+    cleaner.breakdown_keys("original_premium_income", LEGACY_PREMIUM_PRODUCTS)
     | {("claims_paid", "all")}
-    | keys("sum_insured", LEGACY_SUM_INSURED_PRODUCTS)
-    | keys("policy_count", LEGACY_POLICY_PRODUCTS)
+    | cleaner.breakdown_keys("sum_insured", LEGACY_SUM_INSURED_PRODUCTS)
+    | cleaner.breakdown_keys("policy_count", LEGACY_POLICY_PRODUCTS)
     | {("total_assets", "all")}
 )
 REDUCED_KEYS = (
-    keys("original_premium_income", REDUCED_PREMIUM_PRODUCTS)
+    cleaner.breakdown_keys("original_premium_income", REDUCED_PREMIUM_PRODUCTS)
     | {("claims_paid", "all")}
-    | keys("sum_insured", REDUCED_SUM_INSURED_PRODUCTS)
-    | keys("policy_count", REDUCED_POLICY_PRODUCTS)
+    | cleaner.breakdown_keys("sum_insured", REDUCED_SUM_INSURED_PRODUCTS)
+    | cleaner.breakdown_keys("policy_count", REDUCED_POLICY_PRODUCTS)
     | {("total_assets", "all")}
 )
-NO_POLICY_KEYS = REDUCED_KEYS - keys("policy_count", REDUCED_POLICY_PRODUCTS)
+NO_POLICY_KEYS = REDUCED_KEYS - cleaner.breakdown_keys(
+    "policy_count", REDUCED_POLICY_PRODUCTS
+)
 
 EXPECTED_KEYS = {
     "S1_LEGACY_LABELS": LEGACY_KEYS,
@@ -95,26 +92,12 @@ EXPECTED_KEYS = {
 }
 EXPECTED_FACTS = {schema: len(expected) for schema, expected in EXPECTED_KEYS.items()}
 
-METRIC_BY_ALIAS = {
-    cleaner.label_key(alias): {
-        "metric_code": code,
-        "metric_name": name,
-        "unit": unit,
-        "period_basis": basis,
-        "metric_order": order,
-    }
-    for code, name, unit, basis, order, aliases in METRICS
-    for alias in aliases
-}
-PRODUCT_BY_ALIAS = {
-    cleaner.label_key(alias): {
-        "product_line": code,
-        "product_line_name": name,
-        "product_order": order,
-    }
-    for code, name, order, aliases in PRODUCT_LINES
-    for alias in aliases
-}
+METRIC_BY_ALIAS = cleaner.build_metric_aliases(METRICS)
+PRODUCT_BY_ALIAS = cleaner.build_product_aliases(PRODUCT_LINES)
+
+
+def discover_files(input_dir: Path) -> list[tuple[Path, int, int]]:
+    return cleaner.discover_matching_files(input_dir, TARGET_RE)
 
 
 def schema_version(facts: list[dict]) -> str:
@@ -175,29 +158,32 @@ def self_check() -> None:
     assert len(NO_POLICY_KEYS) == 12
 
 
-def configure_cleaner() -> None:
-    cleaner.TARGET_RE = TARGET_RE
-    cleaner.OUTPUT_NAMES = OUTPUT_NAMES
-    cleaner.METRICS = METRICS
-    cleaner.PRODUCT_LINES = PRODUCT_LINES
-    cleaner.EXPECTED_FACTS = EXPECTED_FACTS
-    cleaner.EXPECTED_KEYS = EXPECTED_KEYS
-    cleaner.METRIC_BY_ALIAS = METRIC_BY_ALIAS
-    cleaner.PRODUCT_BY_ALIAS = PRODUCT_BY_ALIAS
-    cleaner.schema_version = schema_version
-    cleaner.identity_check = identity_check
-    cleaner.parse_file = parse_file
-    cleaner.self_check = self_check
+PROFILE = cleaner.CleanerProfile(
+    target_pattern=TARGET_RE,
+    output_names=OUTPUT_NAMES,
+    metrics=METRICS,
+    product_lines=PRODUCT_LINES,
+    expected_facts=EXPECTED_FACTS,
+    expected_keys=EXPECTED_KEYS,
+    metric_by_alias=METRIC_BY_ALIAS,
+    product_by_alias=PRODUCT_BY_ALIAS,
+    schema_version=schema_version,
+    identity_check=identity_check,
+    parse_file=parse_file,
+    self_check=self_check,
+)
+
+
+def run(input_dir: Path, output_dir: Path, check_only: bool = False) -> None:
+    cleaner.run_profile(PROFILE, input_dir, output_dir, check_only)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="将财产险公司经营情况表清洗为可追溯长表")
-    parser.add_argument("--input-dir", type=Path, default=Path.cwd())
-    parser.add_argument("--output-dir", type=Path, default=Path.cwd() / "output_property_insurance_clean")
-    parser.add_argument("--check-only", action="store_true", help="全量解析和校验，不写结果文件")
-    args = parser.parse_args()
-    configure_cleaner()
-    cleaner.run(args.input_dir.resolve(), args.output_dir.resolve(), args.check_only)
+    cleaner.cleaner_main(
+        PROFILE,
+        description="将财产险公司经营情况表清洗为可追溯长表",
+        default_output_dir="output_property_insurance_clean",
+    )
 
 
 if __name__ == "__main__":

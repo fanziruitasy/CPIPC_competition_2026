@@ -7,10 +7,14 @@ import shutil
 import unicodedata
 from calendar import monthrange
 from collections import defaultdict
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import RLock
+from typing import Callable, Iterator
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -28,6 +32,29 @@ from clean_region_premium import (
     xls_sheets,
     xlsx_sheets,
 )
+
+
+MetricSpec = tuple[str, str, str, str, int, list[str]]
+ProductSpec = tuple[str, str, int, list[str]]
+ParseResult = tuple[list[dict], dict]
+
+
+@dataclass(frozen=True)
+class CleanerProfile:
+    """Dataset-specific rules consumed by the shared insurance cleaner."""
+
+    target_pattern: re.Pattern[str]
+    output_names: dict[str, str]
+    metrics: list[MetricSpec]
+    product_lines: list[ProductSpec]
+    expected_facts: dict[str, int]
+    expected_keys: dict[str, set[tuple[str, str]]]
+    metric_by_alias: dict[str, dict]
+    product_by_alias: dict[str, dict]
+    schema_version: Callable[[list[dict]], str]
+    identity_check: Callable[[list[dict]], tuple[Decimal | None, Decimal | None]]
+    parse_file: Callable[[Path, int, int, Path], ParseResult]
+    self_check: Callable[[], None]
 
 
 TARGET_RE = re.compile(r"^\d+_(20\d{2})年0?(\d{1,2})月人身险公司经营情况表_.*\.(?:xls|xlsx)$", re.I)
@@ -121,6 +148,36 @@ def label_key(value: object) -> str:
     return normalize_text(value).replace("：", ":")
 
 
+def build_metric_aliases(metrics: list[MetricSpec]) -> dict[str, dict]:
+    return {
+        label_key(alias): {
+            "metric_code": code,
+            "metric_name": name,
+            "unit": unit,
+            "period_basis": basis,
+            "metric_order": order,
+        }
+        for code, name, unit, basis, order, aliases in metrics
+        for alias in aliases
+    }
+
+
+def build_product_aliases(products: list[ProductSpec]) -> dict[str, dict]:
+    return {
+        label_key(alias): {
+            "product_line": code,
+            "product_line_name": name,
+            "product_order": order,
+        }
+        for code, name, order, aliases in products
+        for alias in aliases
+    }
+
+
+def breakdown_keys(metric: str, breakdowns: set[str]) -> set[tuple[str, str]]:
+    return {(metric, "all")} | {(metric, breakdown) for breakdown in breakdowns}
+
+
 def exact_decimal_value(value: object) -> tuple[Decimal | None, str | None]:
     number, flag = decimal_value(value)
     if flag != "PRECISION_ROUNDED_6DP":
@@ -132,37 +189,25 @@ def exact_decimal_value(value: object) -> tuple[Decimal | None, str | None]:
     return number, "NEGATIVE_VALUE" if number < 0 else None
 
 
-METRIC_BY_ALIAS = {
-    label_key(alias): {
-        "metric_code": code,
-        "metric_name": name,
-        "unit": unit,
-        "period_basis": basis,
-        "metric_order": order,
-    }
-    for code, name, unit, basis, order, aliases in METRICS
-    for alias in aliases
-}
-PRODUCT_BY_ALIAS = {
-    label_key(alias): {
-        "product_line": code,
-        "product_line_name": name,
-        "product_order": order,
-    }
-    for code, name, order, aliases in PRODUCT_LINES
-    for alias in aliases
-}
+METRIC_BY_ALIAS = build_metric_aliases(METRICS)
+PRODUCT_BY_ALIAS = build_product_aliases(PRODUCT_LINES)
 
 
-def discover_files(input_dir: Path) -> list[tuple[Path, int, int]]:
+def discover_matching_files(
+    input_dir: Path, target_pattern: re.Pattern[str]
+) -> list[tuple[Path, int, int]]:
     found = []
     for path in input_dir.rglob("*"):
         if not path.is_file() or path.name.startswith("~$") or path.suffix.lower() not in {".xls", ".xlsx"}:
             continue
-        match = TARGET_RE.match(path.name)
+        match = target_pattern.match(path.name)
         if match and 1 <= int(match.group(2)) <= 12:
             found.append((path, int(match.group(1)), int(match.group(2))))
     return sorted(found, key=lambda item: (item[1], item[2], item[0].name))
+
+
+def discover_files(input_dir: Path) -> list[tuple[Path, int, int]]:
+    return discover_matching_files(input_dir, TARGET_RE)
 
 
 def load_source(path: Path) -> tuple[list[dict], str, bytes]:
@@ -187,15 +232,21 @@ def find_table(sheets: list[dict]) -> tuple[dict, int]:
     raise ValueError("未找到人身险经营情况表头")
 
 
-def first_number_to_right(sheet: dict, row: int, label_col: int) -> tuple[int, Decimal | None, str | None]:
+def first_number_to_right(
+    sheet: dict, row: int, label_col: int, source_format: str
+) -> tuple[int, Decimal | None, Decimal | None, str, str | None]:
     width = len(sheet["values"][row - 1])
     for col in range(label_col + 1, width + 1):
-        value = get_cell(sheet, row, col)
-        number, flag = exact_decimal_value(value)
+        raw_value = get_cell(sheet, row, col)
+        display_raw = get_cell(sheet, row, col, "display_values")
+        value_input = display_raw if source_format == "xls" else raw_value
+        number, flag = exact_decimal_value(value_input)
+        value_storage, _ = exact_decimal_value(raw_value)
         formula = get_cell(sheet, row, col, "formulas")
         if number is not None or formula:
-            return col, number, flag
-    return label_col + 1, None, "NON_NUMERIC_VALUE"
+            value_display = "" if display_raw is None else str(display_raw).strip()
+            return col, number, value_storage, value_display, flag
+    return label_col + 1, None, None, "", "NON_NUMERIC_VALUE"
 
 
 def note_text(sheet: dict, start_row: int) -> tuple[str, bool]:
@@ -302,7 +353,9 @@ def parse_file(path: Path, year: int, month: int, input_dir: Path) -> tuple[list
                 continue
             product = info
 
-        value_col, value, value_flag = first_number_to_right(sheet, row_number, label_col)
+        value_col, value, value_storage, value_display, value_flag = first_number_to_right(
+            sheet, row_number, label_col, source_format
+        )
         formula = get_cell(sheet, row_number, value_col, "formulas")
         formula_cache_missing_flag = bool(formula and value is None)
         if formula_cache_missing_flag:
@@ -331,6 +384,10 @@ def parse_file(path: Path, year: int, month: int, input_dir: Path) -> tuple[list
                 "product_order": product["product_order"],
                 "metric_path": f"{current_metric['metric_code']}.{product['product_line']}",
                 "value": value,
+                "value_storage": value_storage,
+                "value_display": value_display,
+                "value_decimal": value,
+                "value_raw": value_display,
                 "value_status": "missing" if value is None else "reported_zero" if value == 0 else "reported",
                 "unit": current_metric["unit"],
                 "schema_version": "",
@@ -553,6 +610,10 @@ FACT_SCHEMA = pa.schema(
         ("product_order", pa.int8()),
         ("metric_path", pa.string()),
         ("value", pa.decimal128(38, 18)),
+        ("value_storage", pa.decimal128(38, 18)),
+        ("value_display", pa.string()),
+        ("value_decimal", pa.decimal128(38, 18)),
+        ("value_raw", pa.string()),
         ("value_status", pa.string()),
         ("unit", pa.string()),
         ("schema_version", pa.string()),
@@ -677,13 +738,91 @@ def run(input_dir: Path, output_dir: Path, check_only: bool) -> None:
     print(f"WROTE files={len(files)}, facts={len(facts)} to {output_dir}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="复用地区保费清洗底层，将人身险公司经营情况表清洗为可追溯长表")
+_PROFILE_LOCK = RLock()
+
+
+@contextmanager
+def activated_profile(profile: CleanerProfile) -> Iterator[None]:
+    """Apply a profile for one run and restore the base cleaner afterwards."""
+    overrides = {
+        "TARGET_RE": profile.target_pattern,
+        "OUTPUT_NAMES": profile.output_names,
+        "METRICS": profile.metrics,
+        "PRODUCT_LINES": profile.product_lines,
+        "EXPECTED_FACTS": profile.expected_facts,
+        "EXPECTED_KEYS": profile.expected_keys,
+        "METRIC_BY_ALIAS": profile.metric_by_alias,
+        "PRODUCT_BY_ALIAS": profile.product_by_alias,
+        "schema_version": profile.schema_version,
+        "identity_check": profile.identity_check,
+        "parse_file": profile.parse_file,
+        "self_check": profile.self_check,
+    }
+    module_state = globals()
+    with _PROFILE_LOCK:
+        previous = {name: module_state[name] for name in overrides}
+        module_state.update(overrides)
+        try:
+            yield
+        finally:
+            module_state.update(previous)
+
+
+def run_profile(
+    profile: CleanerProfile,
+    input_dir: Path,
+    output_dir: Path,
+    check_only: bool = False,
+) -> None:
+    with activated_profile(profile):
+        run(input_dir, output_dir, check_only)
+
+
+def cleaner_main(
+    profile: CleanerProfile,
+    *,
+    description: str,
+    default_output_dir: str,
+) -> None:
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--input-dir", type=Path, default=Path.cwd())
-    parser.add_argument("--output-dir", type=Path, default=Path.cwd() / "output_life_insurance_clean")
-    parser.add_argument("--check-only", action="store_true", help="全量解析和校验，不写结果文件")
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path.cwd() / default_output_dir
+    )
+    parser.add_argument(
+        "--check-only", action="store_true", help="全量解析和校验，不写结果文件"
+    )
     args = parser.parse_args()
-    run(args.input_dir.resolve(), args.output_dir.resolve(), args.check_only)
+    run_profile(
+        profile,
+        args.input_dir.resolve(),
+        args.output_dir.resolve(),
+        args.check_only,
+    )
+
+
+LIFE_PROFILE = CleanerProfile(
+    target_pattern=TARGET_RE,
+    output_names=OUTPUT_NAMES,
+    metrics=METRICS,
+    product_lines=PRODUCT_LINES,
+    expected_facts=EXPECTED_FACTS,
+    expected_keys=EXPECTED_KEYS,
+    metric_by_alias=METRIC_BY_ALIAS,
+    product_by_alias=PRODUCT_BY_ALIAS,
+    schema_version=schema_version,
+    identity_check=identity_check,
+    parse_file=parse_file,
+    self_check=self_check,
+)
+
+
+def main() -> None:
+    cleaner_main(
+        LIFE_PROFILE,
+        description="将人身险公司经营情况表清洗为可追溯长表",
+        default_output_dir="output_life_insurance_clean",
+    )
 
 
 if __name__ == "__main__":

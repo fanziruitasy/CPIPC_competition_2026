@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -99,10 +98,6 @@ PRODUCT_LINES = [
 ]
 
 
-def keys(metric: str, breakdowns: set[str]) -> set[tuple[str, str]]:
-    return {(metric, "all")} | {(metric, breakdown) for breakdown in breakdowns}
-
-
 INSURANCE_BREAKDOWNS = {
     "property_insurance",
     "personal_insurance",
@@ -119,31 +114,31 @@ MODERN_ASSET_BREAKDOWNS = LEGACY_ASSET_BREAKDOWNS | {
 }
 
 FULL_KEYS = (
-    keys("original_premium_income", INSURANCE_BREAKDOWNS)
+    cleaner.breakdown_keys("original_premium_income", INSURANCE_BREAKDOWNS)
     | {("sum_insured", "all"), ("policy_count", "all")}
-    | keys("claims_paid", INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("claims_paid", INSURANCE_BREAKDOWNS)
     | {("operating_management_expense", "all")}
-    | keys("funds_employed_balance", INVESTMENT_BREAKDOWNS)
-    | keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
+    | cleaner.breakdown_keys("funds_employed_balance", INVESTMENT_BREAKDOWNS)
+    | cleaner.breakdown_keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
     | {("net_assets", "all")}
 )
 REDUCED_2023_KEYS = (
-    keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
-    | keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
-    | keys("funds_employed_balance", INVESTMENT_BREAKDOWNS)
-    | keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
+    cleaner.breakdown_keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("funds_employed_balance", INVESTMENT_BREAKDOWNS)
+    | cleaner.breakdown_keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
     | {("net_assets", "all")}
 )
 REDUCED_2024_KEYS = (
-    keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
-    | keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
-    | keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
+    cleaner.breakdown_keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("total_assets", LEGACY_ASSET_BREAKDOWNS)
     | {("net_assets", "all")}
 )
 MODERN_KEYS = (
-    keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
-    | keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
-    | keys("total_assets", MODERN_ASSET_BREAKDOWNS)
+    cleaner.breakdown_keys("original_premium_income", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("claims_paid", TOP_INSURANCE_BREAKDOWNS)
+    | cleaner.breakdown_keys("total_assets", MODERN_ASSET_BREAKDOWNS)
     | {("net_assets", "all")}
 )
 EXPECTED_KEYS = {
@@ -155,37 +150,12 @@ EXPECTED_KEYS = {
 }
 EXPECTED_FACTS = {schema: len(expected) for schema, expected in EXPECTED_KEYS.items()}
 
-METRIC_BY_ALIAS = {
-    cleaner.label_key(alias): {
-        "metric_code": code,
-        "metric_name": name,
-        "unit": unit,
-        "period_basis": basis,
-        "metric_order": order,
-    }
-    for code, name, unit, basis, order, aliases in METRICS
-    for alias in aliases
-}
-PRODUCT_BY_ALIAS = {
-    cleaner.label_key(alias): {
-        "product_line": code,
-        "product_line_name": name,
-        "product_order": order,
-    }
-    for code, name, order, aliases in PRODUCT_LINES
-    for alias in aliases
-}
+METRIC_BY_ALIAS = cleaner.build_metric_aliases(METRICS)
+PRODUCT_BY_ALIAS = cleaner.build_product_aliases(PRODUCT_LINES)
 
 
 def discover_files(input_dir: Path) -> list[tuple[Path, int, int]]:
-    found = []
-    for path in input_dir.rglob("*"):
-        if not path.is_file() or path.name.startswith("~$"):
-            continue
-        match = TARGET_RE.match(path.name)
-        if match and 1 <= int(match.group(2)) <= 12:
-            found.append((path, int(match.group(1)), int(match.group(2))))
-    return sorted(found, key=lambda item: (item[1], item[2], item[0].name))
+    return cleaner.discover_matching_files(input_dir, TARGET_RE)
 
 
 def schema_version(facts: list[dict]) -> str:
@@ -275,39 +245,32 @@ def self_check() -> None:
     assert identity_check(sample)[0] == 0
 
 
-def configure_cleaner() -> None:
-    cleaner.TARGET_RE = TARGET_RE
-    cleaner.OUTPUT_NAMES = OUTPUT_NAMES
-    cleaner.METRICS = METRICS
-    cleaner.PRODUCT_LINES = PRODUCT_LINES
-    cleaner.EXPECTED_FACTS = EXPECTED_FACTS
-    cleaner.EXPECTED_KEYS = EXPECTED_KEYS
-    cleaner.METRIC_BY_ALIAS = METRIC_BY_ALIAS
-    cleaner.PRODUCT_BY_ALIAS = PRODUCT_BY_ALIAS
-    cleaner.schema_version = schema_version
-    cleaner.identity_check = identity_check
-    cleaner.parse_file = parse_file
-    cleaner.self_check = self_check
+PROFILE = cleaner.CleanerProfile(
+    target_pattern=TARGET_RE,
+    output_names=OUTPUT_NAMES,
+    metrics=METRICS,
+    product_lines=PRODUCT_LINES,
+    expected_facts=EXPECTED_FACTS,
+    expected_keys=EXPECTED_KEYS,
+    metric_by_alias=METRIC_BY_ALIAS,
+    product_by_alias=PRODUCT_BY_ALIAS,
+    schema_version=schema_version,
+    identity_check=identity_check,
+    parse_file=parse_file,
+    self_check=self_check,
+)
 
 
 def run(input_dir: Path, output_dir: Path, check_only: bool = False) -> None:
-    configure_cleaner()
-    cleaner.run(input_dir, output_dir, check_only)
+    cleaner.run_profile(PROFILE, input_dir, output_dir, check_only)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="将保险业经营情况表清洗为可追溯长表")
-    parser.add_argument("--input-dir", type=Path, default=Path.cwd())
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path.cwd() / "output_insurance_industry_clean",
+    cleaner.cleaner_main(
+        PROFILE,
+        description="将保险业经营情况表清洗为可追溯长表",
+        default_output_dir="output_insurance_industry_clean",
     )
-    parser.add_argument(
-        "--check-only", action="store_true", help="全量解析和校验，不写结果文件"
-    )
-    args = parser.parse_args()
-    run(args.input_dir.resolve(), args.output_dir.resolve(), args.check_only)
 
 
 if __name__ == "__main__":

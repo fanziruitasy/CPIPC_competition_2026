@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import hashlib
 import re
 import unicodedata
 from calendar import monthrange
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import openpyxl
@@ -15,6 +16,30 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pywintypes
 import win32com.client
+
+
+_EXCEL_APPLICATION = None
+
+
+def _excel_application():
+    global _EXCEL_APPLICATION
+    if _EXCEL_APPLICATION is None:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.AutomationSecurity = 3
+        _EXCEL_APPLICATION = excel
+    return _EXCEL_APPLICATION
+
+
+def close_excel_application() -> None:
+    global _EXCEL_APPLICATION
+    if _EXCEL_APPLICATION is not None:
+        _EXCEL_APPLICATION.Quit()
+        _EXCEL_APPLICATION = None
+
+
+atexit.register(close_excel_application)
 
 
 TARGET_RE = re.compile(r"^\d+_(20\d{2})年(\d{1,2})月全国各地区原保险保费收入情况表(?:_|\.xls)")
@@ -37,12 +62,15 @@ OFFICIAL_FALLBACKS = {
     },
 }
 
+# Source column, header aliases, canonical product code and product name.
+# Every column measures the same thing (original premium income); the old
+# cleaner incorrectly modeled the five product breakdowns as five metrics.
 METRICS = [
-    ("premium_total", "合计", "原保险保费收入合计"),
-    ("premium_property", "财产保险|财产险", "财产险"),
-    ("premium_life", "寿险", "寿险"),
-    ("premium_accident", "意外险", "意外险"),
-    ("premium_health", "健康险", "健康险"),
+    ("premium_total", "合计", "all", "合计"),
+    ("premium_property", "财产保险|财产险", "property_insurance", "财产险"),
+    ("premium_life", "寿险", "life_insurance", "寿险"),
+    ("premium_accident", "意外险", "accident_insurance", "意外险"),
+    ("premium_health", "健康险", "health_insurance", "健康险"),
 ]
 
 # code, canonical name, type, order, related province code, source aliases
@@ -126,6 +154,28 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def format_excel_value(value: object, number_format: str | None) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, (int, float, Decimal)):
+        return str(value).strip()
+    if not number_format or number_format.lower() == "general":
+        return str(value).strip()
+
+    number = Decimal(str(value))
+    sections = number_format.split(";")
+    section = sections[1] if number < 0 and len(sections) > 1 else sections[0]
+    percent = "%" in section
+    shown = abs(number) * (100 if percent else 1)
+    decimals = re.search(r"\.([0#]+)", section)
+    places = len(decimals.group(1)) if decimals else 0
+    rounded = shown.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+    rendered = f"{rounded:,.{places}f}" if "," in section else f"{rounded:.{places}f}"
+    if number < 0:
+        rendered = f"({rendered})" if "(" in section else f"-{rendered}"
+    return rendered + ("%" if percent else "")
+
+
 def xlsx_sheets(path: Path) -> list[dict]:
     values_wb = openpyxl.load_workbook(path, data_only=True, read_only=False, keep_links=False)
     formulas_wb = openpyxl.load_workbook(path, data_only=False, read_only=False, keep_links=False)
@@ -136,134 +186,138 @@ def xlsx_sheets(path: Path) -> list[dict]:
             formulas_ws = formulas_wb[name]
             rows = max(values_ws.max_row, formulas_ws.max_row)
             cols = max(values_ws.max_column, formulas_ws.max_column)
-            values, formulas, formats = [], [], []
+            values, display_values, formulas, formats = [], [], [], []
             for row in range(1, rows + 1):
-                value_row, formula_row, format_row = [], [], []
+                value_row, display_row, formula_row, format_row = [], [], [], []
                 for col in range(1, cols + 1):
                     value_cell = values_ws.cell(row, col)
                     formula_cell = formulas_ws.cell(row, col)
                     raw = formula_cell.value
                     value_row.append(value_cell.value)
+                    display_row.append(value_cell.value)
                     formula_row.append(raw if isinstance(raw, str) and raw.startswith("=") else None)
                     format_row.append(formula_cell.number_format or None)
                 values.append(value_row)
+                display_values.append(display_row)
                 formulas.append(formula_row)
                 formats.append(format_row)
-            sheets.append({"name": name, "values": values, "formulas": formulas, "formats": formats})
+            sheets.append(
+                {
+                    "name": name,
+                    "values": values,
+                    "display_values": display_values,
+                    "formulas": formulas,
+                    "formats": formats,
+                }
+            )
     finally:
         values_wb.close()
         formulas_wb.close()
     return sheets
 
 
-def xls_sheets(path: Path) -> list[dict]:
-    connection = win32com.client.Dispatch("ADODB.Connection")
-    providers = ["Microsoft.ACE.OLEDB.12.0", "Microsoft.ACE.OLEDB.16.0", "Microsoft.Jet.OLEDB.4.0"]
-    errors = []
-    for provider in providers:
-        try:
-            connection.Open(
-                f'Provider={provider};Data Source={path.resolve()};'
-                'Extended Properties="Excel 8.0;HDR=NO;IMEX=1;READONLY=TRUE";Mode=Read;'
-            )
-            break
-        except Exception as exc:  # provider availability differs by machine
-            errors.append(f"{provider}: {exc}")
-    else:
-        raise RuntimeError("无法只读打开 xls：" + " | ".join(errors))
+def _range_matrix(raw: object, rows: int, cols: int) -> list[list[object]]:
+    if rows == 1 and cols == 1:
+        return [[raw]]
+    if rows == 1:
+        return [list(raw)]
+    return [list(row) for row in raw]
 
-    tables = []
-    schema = connection.OpenSchema(20)
-    try:
-        while not schema.EOF:
-            table_name = str(schema.Fields("TABLE_NAME").Value)
-            table_type = str(schema.Fields("TABLE_TYPE").Value)
-            unquoted = table_name
-            if unquoted.startswith("'") and unquoted.endswith("'"):
-                unquoted = unquoted[1:-1].replace("''", "'")
-            if table_type.upper() == "TABLE" and unquoted.endswith("$"):
-                tables.append(unquoted[:-1])
-            schema.MoveNext()
-    finally:
-        schema.Close()
 
-    sheets = []
-    try:
-        for name in tables:
-            safe_name = name.replace("]", "]]")
-            recordset = win32com.client.Dispatch("ADODB.Recordset")
-            try:
-                # Anchor at A1 so F1 maps to column A; ADO trims the legacy XLS maximum range to used cells.
-                table_range = f"'{safe_name}$'" if name != name.strip() else f"{safe_name}$A1:IV65536"
-                recordset.Open(f"SELECT * FROM [{table_range}]", connection, 0, 1)
-                raw = recordset.GetRows() if not recordset.EOF else ()
-                values = [list(row) for row in zip(*raw)] if raw else []
-            finally:
-                if recordset.State:
-                    recordset.Close()
-            cols = max((len(row) for row in values), default=0)
-            empty = [[None] * cols for _ in values]
-            sheets.append({"name": name, "values": values, "formulas": empty, "formats": [row[:] for row in empty]})
-    finally:
-        connection.Close()
-
-    truncated = [
-        (sheet, row_number, col_number, value)
-        for sheet in sheets
-        for row_number, row in enumerate(sheet["values"], start=1)
-        for col_number, value in enumerate(row, start=1)
-        if isinstance(value, str) and len(value) == 255
+def _pad_matrix(matrix: list[list[object]], top: int, left: int, width: int) -> list[list[object]]:
+    padded_width = left + width
+    return [[None] * padded_width for _ in range(top)] + [
+        [None] * left + row + [None] * (width - len(row)) for row in matrix
     ]
-    if truncated:
-        # ACE truncates some BIFF text cells at 255 characters; Excel can read the full cell.
+
+
+def _worksheet_content_bounds(worksheet) -> tuple[int, int, int, int] | None:
+    """Return the absolute zero-based bounds of constants and formulas."""
+    bounds = None
+    for cell_type in (2, -4123):  # xlCellTypeConstants, xlCellTypeFormulas
         try:
-            excel = win32com.client.DispatchEx("Excel.Application")
+            areas = worksheet.Cells.SpecialCells(cell_type).Areas
         except pywintypes.com_error:
-            print(
-                f"检测到 {len(truncated)} 个被截断到 255 字符的文本单元格（{path.name}），"
-                "但 Excel COM 不可用，保留截断文本（不影响数值数据）",
-                flush=True,
+            continue
+        for area in areas:
+            first_row, first_col = int(area.Row) - 1, int(area.Column) - 1
+            last_row = first_row + int(area.Rows.Count) - 1
+            last_col = first_col + int(area.Columns.Count) - 1
+            if bounds is None:
+                bounds = first_row, last_row, first_col, last_col
+            else:
+                top, bottom, left, right = bounds
+                bounds = (
+                    min(top, first_row),
+                    max(bottom, last_row),
+                    min(left, first_col),
+                    max(right, last_col),
+                )
+    return bounds
+
+
+def xls_sheets(path: Path) -> list[dict]:
+    """Read legacy XLS once through Excel, retaining stored and rendered values."""
+    excel = _excel_application()
+    workbook = None
+    try:
+        workbook = excel.Workbooks.Open(str(path.resolve()), 0, True)
+        sheets = []
+        for worksheet in workbook.Worksheets:
+            bounds = _worksheet_content_bounds(worksheet)
+            if bounds is None:
+                sheets.append(
+                    {
+                        "name": str(worksheet.Name),
+                        "values": [],
+                        "display_values": [],
+                        "formulas": [],
+                        "formats": [],
+                    }
+                )
+                continue
+            first_row, last_row, first_col, last_col = bounds
+            top, left = first_row, first_col
+            rows = last_row - first_row + 1
+            cols = last_col - first_col + 1
+            used = worksheet.Range(
+                worksheet.Cells.Item(top + 1, left + 1),
+                worksheet.Cells.Item(last_row + 1, last_col + 1),
             )
-            return sheets
-        workbook = None
-        try:
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.AutomationSecurity = 3
-            workbook = excel.Workbooks.Open(str(path.resolve()), 0, True)
-            for sheet in sheets:
-                candidates = [item for item in truncated if item[0] is sheet]
-                if not candidates:
-                    continue
-                worksheet = workbook.Worksheets.Item(sheet["name"])
-                restored, offsets = [], set()
-                for _, row_number, col_number, prefix in candidates:
-                    matches = [
-                        (actual_col, value)
-                        for actual_col in range(1, 27)
-                        if isinstance((value := worksheet.Cells.Item(row_number, actual_col).Value2), str)
-                        and value.startswith(prefix)
-                    ]
-                    if len(matches) != 1:
-                        raise ValueError(
-                            f"无法定位 Excel 全文：{sheet['name']}!{source_cell(row_number, col_number)}"
+            values = _range_matrix(used.Value2, rows, cols)
+            raw_formulas = _range_matrix(used.Formula, rows, cols)
+            formulas = [
+                [value if isinstance(value, str) and value.startswith("=") else None for value in row]
+                for row in raw_formulas
+            ]
+            formats, display_values = [], []
+            for row in range(1, rows + 1):
+                format_row, display_row = [], []
+                for col in range(1, cols + 1):
+                    cell = worksheet.Cells.Item(top + row, left + col)
+                    number_format = cell.NumberFormat
+                    display = cell.Text
+                    if isinstance(display, str) and display.strip("#") == "":
+                        display = format_excel_value(
+                            values[row - 1][col - 1], number_format
                         )
-                    actual_col, full_text = matches[0]
-                    offsets.add(actual_col - col_number)
-                    restored.append((row_number, actual_col, full_text))
-                if len(offsets) != 1 or min(offsets) < 0:
-                    raise ValueError(f"Excel 与 ADO 列偏移不一致：{sheet['name']}")
-                offset = offsets.pop()
-                if offset:
-                    for field in ("values", "formulas", "formats"):
-                        sheet[field] = [[None] * offset + row for row in sheet[field]]
-                for row_number, actual_col, full_text in restored:
-                    sheet["values"][row_number - 1][actual_col - 1] = full_text
-        finally:
-            if workbook is not None:
-                workbook.Close(False)
-            excel.Quit()
-    return sheets
+                    format_row.append(number_format)
+                    display_row.append(display)
+                formats.append(format_row)
+                display_values.append(display_row)
+            sheets.append(
+                {
+                    "name": str(worksheet.Name),
+                    "values": _pad_matrix(values, top, left, cols),
+                    "display_values": _pad_matrix(display_values, top, left, cols),
+                    "formulas": _pad_matrix(formulas, top, left, cols),
+                    "formats": _pad_matrix(formats, top, left, cols),
+                }
+            )
+        return sheets
+    finally:
+        if workbook is not None:
+            workbook.Close(False)
 
 
 def get_cell(sheet: dict, row: int, col: int, field: str = "values"):
@@ -373,7 +427,10 @@ def parse_file(
         row_text = [normalize_text(value) for value in sheet["values"][row_number - 1]]
         if any(text.startswith("注:") for text in row_text if text):
             break
-        numeric_like = any(get_cell(sheet, row_number, columns[code]) not in (None, "") for code, _, _ in METRICS)
+        numeric_like = any(
+            get_cell(sheet, row_number, columns[code]) not in (None, "")
+            for code, _, _, _ in METRICS
+        )
         if normalized_region and numeric_like:
             unknown_regions.append(f"{source_cell(row_number, columns['region'])}:{raw_region}")
 
@@ -411,12 +468,16 @@ def parse_file(
     value_errors = 0
     for row_number, raw_region, region in rows:
         region_values = {}
-        for metric_order, (metric_code, _, metric_name) in enumerate(METRICS):
-            col = columns[metric_code]
+        for product_order, (column_code, _, product_line, product_name) in enumerate(METRICS):
+            col = columns[column_code]
             cached = get_cell(sheet, row_number, col)
+            display_raw = get_cell(sheet, row_number, col, "display_values")
             formula = get_cell(sheet, row_number, col, "formulas")
             number_format = get_cell(sheet, row_number, col, "formats")
-            value, flag = decimal_value(cached)
+            value_storage, _ = decimal_value(cached)
+            value_input = display_raw if source_format == "xls" else cached
+            value, flag = decimal_value(value_input)
+            value_display = "" if display_raw is None else str(display_raw).strip()
             flags = []
             if formula and value is None:
                 flags.append("FORMULA_CACHE_MISSING")
@@ -429,7 +490,7 @@ def parse_file(
                     value_errors += 1
             if value is None:
                 missing_values += 1
-            region_values[metric_code] = value
+            region_values[column_code] = value
             facts.append(
                 {
                     "release_id": release_id,
@@ -441,11 +502,21 @@ def parse_file(
                     "region_name_raw": "" if raw_region is None else str(raw_region),
                     "region_type": region["region_type"],
                     "region_order": region["region_order"],
-                    "metric_code": metric_code,
-                    "metric_name": metric_name,
-                    "metric_name_raw": raw_metric_labels[metric_code],
-                    "metric_order": metric_order,
+                    "parent_region_code": region["parent_region_code"],
+                    "metric_code": "original_premium_income",
+                    "metric_name": "原保险保费收入",
+                    "metric_name_raw": raw_metric_labels[column_code],
+                    "metric_order": 0,
+                    "product_line": product_line,
+                    "product_line_name": product_name,
+                    "product_line_raw": raw_metric_labels[column_code],
+                    "product_order": product_order,
+                    "metric_path": f"original_premium_income.{product_line}",
                     "value": value,
+                    "value_storage": value_storage,
+                    "value_display": value_display,
+                    "value_decimal": value,
+                    "value_raw": value_display,
                     "value_status": "missing" if value is None else "reported_zero" if value == 0 else "reported",
                     "unit": "CNY_100M",
                     "schema_version": schema_version,
@@ -479,17 +550,17 @@ def parse_file(
 
     national_deltas = {}
     national_rounding_tolerances = {}
-    for metric_code, _, _ in METRICS:
-        national_value = values_by_region.get("CN", {}).get(metric_code)
+    for column_code, _, _, _ in METRICS:
+        national_value = values_by_region.get("CN", {}).get(column_code)
         subordinate_values = [
-            metrics[metric_code]
+            metrics[column_code]
             for code, metrics in values_by_region.items()
-            if code != "CN" and metrics.get(metric_code) is not None
+            if code != "CN" and metrics.get(column_code) is not None
         ]
-        national_deltas[metric_code] = (
+        national_deltas[column_code] = (
             None if national_value is None else national_value - sum(subordinate_values, Decimal(0))
         )
-        national_rounding_tolerances[metric_code] = source_precision_unit * Decimal(len(subordinate_values) + 1) / 2
+        national_rounding_tolerances[column_code] = source_precision_unit * Decimal(len(subordinate_values) + 1) / 2
     national_delta = national_deltas["premium_total"]
     expected_codes = expected_region_codes(schema_version)
     missing_codes = sorted(expected_codes - present_codes)
@@ -512,7 +583,7 @@ def parse_file(
         "row_identity_tolerance": row_identity_tolerance,
         "national_minus_subregions": national_delta,
         "national_minus_subregions_by_metric": "|".join(
-            f"{code}={national_deltas[code]}" for code, _, _ in METRICS
+            f"{code}={national_deltas[code]}" for code, _, _, _ in METRICS
         ),
         "numeric_precision": "integer" if source_precision_unit == 1 else "decimal",
         "duplicate_key_count": 0,
@@ -549,16 +620,16 @@ def parse_file(
     warnings = []
     if row_diffs and max(row_diffs) > row_identity_tolerance:
         warnings.append(f"row_identity_max_abs_diff={max(row_diffs)}")
-    for metric_code, _, _ in METRICS:
-        delta = national_deltas[metric_code]
-        national_value = values_by_region.get("CN", {}).get(metric_code)
+    for column_code, _, _, _ in METRICS:
+        delta = national_deltas[column_code]
+        national_value = values_by_region.get("CN", {}).get(column_code)
         if delta is None:
             continue
         relative_delta = abs(delta / national_value) if national_value else Decimal(0)
-        if abs(delta) > national_rounding_tolerances[metric_code] and (
+        if abs(delta) > national_rounding_tolerances[column_code] and (
             abs(delta) > Decimal("1") or relative_delta > Decimal("0.0005")
         ):
-            warnings.append(f"national_delta_{metric_code}={delta}")
+            warnings.append(f"national_delta_{column_code}={delta}")
     if negative_values:
         warnings.append(f"negative_values={negative_values}")
     if warnings and qc["severity"] == "PASS":
@@ -583,7 +654,10 @@ def missing_periods(periods: set[tuple[int, int]]) -> list[str]:
 def apply_dataset_checks(
     facts: list[dict], quality: list[dict], discovered_periods: set[tuple[int, int]]
 ) -> tuple[int, list[str]]:
-    keys = [(row["release_id"], row["region_code"], row["metric_code"]) for row in facts]
+    keys = [
+        (row["release_id"], row["region_code"], row["metric_code"], row["product_line"])
+        for row in facts
+    ]
     duplicate_count = len(keys) - len(set(keys))
     if duplicate_count:
         for row in quality:
@@ -598,13 +672,22 @@ def apply_dataset_checks(
         if row["record_type"] == "FILE"
     }
     previous: dict[tuple, tuple[str, Decimal, Decimal]] = {}
-    for row in sorted(facts, key=lambda item: (item["period_end"], item["region_order"], item["metric_order"])):
+    for row in sorted(
+        facts,
+        key=lambda item: (
+            item["period_end"],
+            item["region_order"],
+            item["metric_order"],
+            item["product_order"],
+        ),
+    ):
         if row["value"] is None:
             continue
         key = (
             row["period_end"].year,
             row["region_code"],
             row["metric_code"],
+            row["product_line"],
             row["scope_version"],
             row["statistical_scope_version"],
             row["accounting_basis_version"],
@@ -615,7 +698,11 @@ def apply_dataset_checks(
             qc["cumulative_decrease_count"] += 1
             if qc["severity"] == "PASS":
                 qc["severity"], qc["status"] = "WARN", "CUMULATIVE_DECREASE"
-            message = f"累计值下降:{row['region_code']}/{row['metric_code']} {previous[key][0]}={previous[key][1]} -> {row['release_id']}={row['value']}"
+            message = (
+                f"累计值下降:{row['region_code']}/{row['metric_code']}/"
+                f"{row['product_line']} {previous[key][0]}={previous[key][1]} -> "
+                f"{row['release_id']}={row['value']}"
+            )
             qc["detail"] = "; ".join(filter(None, [qc["detail"], message]))
         previous[key] = (row["release_id"], row["value"], tolerance)
 
@@ -663,11 +750,21 @@ FACT_SCHEMA = pa.schema(
         ("region_name_raw", pa.string()),
         ("region_type", pa.string()),
         ("region_order", pa.int16()),
+        ("parent_region_code", pa.string()),
         ("metric_code", pa.string()),
         ("metric_name", pa.string()),
         ("metric_name_raw", pa.string()),
         ("metric_order", pa.int8()),
+        ("product_line", pa.string()),
+        ("product_line_name", pa.string()),
+        ("product_line_raw", pa.string()),
+        ("product_order", pa.int8()),
+        ("metric_path", pa.string()),
         ("value", pa.decimal128(20, 6)),
+        ("value_storage", pa.decimal128(20, 6)),
+        ("value_display", pa.string()),
+        ("value_decimal", pa.decimal128(20, 6)),
+        ("value_raw", pa.string()),
         ("value_status", pa.string()),
         ("unit", pa.string()),
         ("schema_version", pa.string()),
@@ -787,7 +884,14 @@ def run(input_dir: Path, output_dir: Path, check_only: bool) -> None:
             )
             print(f"ERROR {year:04d}-{month:02d} {path.name}: {exc}")
 
-    all_facts.sort(key=lambda item: (item["period_end"], item["region_order"], item["metric_order"]))
+    all_facts.sort(
+        key=lambda item: (
+            item["period_end"],
+            item["region_order"],
+            item["metric_order"],
+            item["product_order"],
+        )
+    )
     duplicate_count, gaps = apply_dataset_checks(all_facts, quality, discovered_periods)
     parse_errors = [row for row in quality if row["status"] == "PARSE_ERROR"]
     assert not duplicate_count, f"发现 {duplicate_count} 个重复事实键"

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from clean_excel_documents import is_template_file
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_INPUT_DIR = ROOT / "data"
@@ -310,9 +312,8 @@ def read_quality(source_root: Path) -> dict[str, dict]:
     documents = documents[documents["record_type"].eq("FILE")]
     for record in documents.to_dict("records"):
         source = str(record["source_file"]).replace("\\", "/")
-        role = record.get("document_role", "")
         rows[source] = {
-            "existing_category": "template_library" if role == "template_library" else "excel_documents",
+            "existing_category": "excel_documents",
             "quality_severity": record.get("severity", ""),
             "quality_status": record.get("status", ""),
             "quality_detail": record.get("detail", ""),
@@ -376,6 +377,59 @@ def classify_document(text: str) -> tuple[dict, list[str]]:
 def write_parquet(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False, compression="zstd")
+
+
+def build_ingestion_manifest(
+    catalog_frame: pd.DataFrame, template_catalog: pd.DataFrame
+) -> pd.DataFrame:
+    loaded = pd.DataFrame(
+        {
+            "source_file": catalog_frame["source_file"],
+            "source_file_hash": catalog_frame["source_file_hash"],
+            "source_format": catalog_frame["source_format"],
+            "ingestion_status": "loaded",
+            "ingestion_target": catalog_frame["clean_output"],
+            "dataset_family": catalog_frame["dataset_family"],
+            "content_type_code": catalog_frame["content_type_code"],
+            "content_type_name": catalog_frame["content_type_name"],
+            "record_count": catalog_frame["record_count"],
+            "quality_severity": catalog_frame["quality_severity"],
+            "quality_status": catalog_frame["quality_status"],
+            "quality_detail": catalog_frame["quality_detail"],
+            "default_qa_eligible": catalog_frame["default_qa_eligible"],
+        }
+    )
+    metadata_only = pd.DataFrame(
+        {
+            "source_file": template_catalog["source_file"],
+            "source_file_hash": template_catalog["source_file_hash"],
+            "source_format": template_catalog["source_format"],
+            "ingestion_status": "metadata_only",
+            "ingestion_target": "template_schema",
+            "dataset_family": template_catalog["dataset_family"],
+            "content_type_code": template_catalog["content_type_code"],
+            "content_type_name": template_catalog["content_type_name"],
+            "record_count": (
+                template_catalog["field_count"]
+                + template_catalog["formula_pattern_count"]
+                + template_catalog["validation_count"]
+            ),
+            "quality_severity": "PASS",
+            "quality_status": "STRUCTURE_EXTRACTED",
+            "quality_detail": (
+                "formula="
+                + template_catalog["formula_extraction_status"]
+                + "; validation="
+                + template_catalog["validation_extraction_status"]
+            ),
+            "default_qa_eligible": False,
+        }
+    )
+    return (
+        pd.concat([loaded, metadata_only], ignore_index=True)
+        .sort_values("source_file")
+        .reset_index(drop=True)
+    )
 
 
 def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
@@ -486,12 +540,10 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
 
     document_quality = pd.read_csv(source_root / "output_excel_documents_clean" / "quality_report.csv")
     document_quality = document_quality[document_quality["record_type"].eq("FILE")]
-    template_rows = pd.read_parquet(source_root / "output_excel_documents_clean" / "template_rows.parquet")
     workbook_rows = pd.read_parquet(source_root / "output_excel_documents_clean" / "workbook_rows.parquet")
     for quality_row in document_quality.to_dict("records"):
         source_file = quality_row["source_file"]
-        role = quality_row["document_role"]
-        source_rows = template_rows[template_rows["source_file"].eq(source_file)] if role == "template_library" else workbook_rows[workbook_rows["source_file"].eq(source_file)]
+        source_rows = workbook_rows[workbook_rows["source_file"].eq(source_file)]
         if source_rows.empty:
             raise ValueError(f"通用文档没有抽取到行：{source_file}")
         sheet_names = sorted(source_rows["source_sheet"].dropna().astype(str).unique())
@@ -504,8 +556,9 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
         content_type_code, content_type_name = rule["content_type"]
         domain_code, domain_name = rule["domain"]
         topic_code, topic_name = rule["topic"]
-        target_dir = "references" if content_type_code in {"rule_table", "reference_list"} else "templates"
-        relative_output = f"{target_dir}/{rule['family']}_rows.parquet"
+        if content_type_code not in {"rule_table", "reference_list"}:
+            raise ValueError(f"参考文档被错误识别为模板：{source_file}")
+        relative_output = f"references/{rule['family']}_rows.parquet"
         classified = source_rows.copy()
         for name, value in reversed(
             [
@@ -524,7 +577,7 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
             "source_file": source_file,
             "source_file_hash": source_hash(source_rows),
             "source_format": Path(source_file).suffix.lower().lstrip("."),
-            "existing_category": "template_library" if role == "template_library" else "excel_documents",
+            "existing_category": "excel_documents",
             "content_type_code": content_type_code,
             "content_type_name": content_type_name,
             "domain_code": domain_code,
@@ -533,7 +586,7 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
             "topic_name": topic_name,
             "dataset_family": rule["family"],
             "document_function": rule["function"],
-            "frequency": "template" if role == "template_library" else "not_applicable",
+            "frequency": "not_applicable",
             "structured_level": "row_document",
             "classification_basis": "实际工作表名称与行文本关键词",
             "evidence_summary": "matched=" + "|".join(matched),
@@ -550,6 +603,26 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
         record.update(quality[source_file])
         catalog.append(record)
 
+    template_source_dir = source_root / "output_excel_templates_clean"
+    template_target_dir = output_dir / "template_schema"
+    template_catalog = pd.read_parquet(template_source_dir / "template_catalog.parquet")
+    for name in (
+        "template_catalog",
+        "template_fields",
+        "template_formulas",
+        "template_validations",
+    ):
+        frame = pd.read_parquet(template_source_dir / f"{name}.parquet")
+        relative_output = f"template_schema/{name}.parquet"
+        write_parquet(frame, template_target_dir / f"{name}.parquet")
+        output_inventory.append(
+            {
+                "output_file": relative_output,
+                "row_count": len(frame),
+                "source_file_count": frame["source_file"].nunique(),
+            }
+        )
+
     catalog_frame = pd.DataFrame(catalog).sort_values("source_file").reset_index(drop=True)
     discovered = {
         path.name
@@ -558,15 +631,34 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
     }
     classified_sources = set(catalog_frame["source_file"])
     duplicates = catalog_frame["source_file"].duplicated().sum()
-    missing = sorted(discovered - classified_sources)
-    unexpected = sorted(classified_sources - discovered)
+    excluded = {source for source in discovered if is_template_file(Path(source))}
+    expected = discovered - excluded
+    missing = sorted(expected - classified_sources)
+    unexpected = sorted(classified_sources - expected)
     if duplicates or missing or unexpected:
         raise ValueError(f"分类覆盖失败 duplicates={duplicates} missing={missing[:5]} unexpected={unexpected[:5]}")
-    if len(catalog_frame) != 389:
-        raise ValueError(f"源文件数量异常：{len(catalog_frame)}，预期 389")
+    template_sources = set(template_catalog["source_file"])
+    if template_sources != excluded:
+        raise ValueError(
+            "模板结构覆盖失败 "
+            f"missing={sorted(excluded - template_sources)[:5]} "
+            f"unexpected={sorted(template_sources - excluded)[:5]}"
+        )
+
+    ingestion_manifest = build_ingestion_manifest(catalog_frame, template_catalog)
+    manifest_duplicates = int(ingestion_manifest["source_file"].duplicated().sum())
+    manifest_sources = set(ingestion_manifest["source_file"])
+    if manifest_duplicates or manifest_sources != discovered:
+        raise ValueError(
+            "全量入库清单覆盖失败 "
+            f"duplicates={manifest_duplicates} "
+            f"missing={sorted(discovered - manifest_sources)[:5]} "
+            f"unexpected={sorted(manifest_sources - discovered)[:5]}"
+        )
 
     catalog_path = output_dir / "source_catalog.parquet"
     write_parquet(catalog_frame, catalog_path)
+    write_parquet(ingestion_manifest, output_dir / "ingestion_manifest.parquet")
     family_summary = (
         catalog_frame.groupby(
             [
@@ -591,6 +683,9 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
     summary = {
         "source_file_count": len(discovered),
         "classified_source_file_count": len(catalog_frame),
+        "manifest_source_file_count": len(ingestion_manifest),
+        "excluded_source_file_count": len(excluded),
+        "excluded_source_reason": "reporting/calculation templates are not query data",
         "unclassified_source_file_count": len(missing),
         "duplicate_classification_count": int(duplicates),
         "content_type_counts": catalog_frame["content_type_name"].value_counts().sort_index().to_dict(),
@@ -599,7 +694,7 @@ def build(input_dir: Path, output_dir: Path, source_root: Path) -> None:
         "dataset_family_counts": catalog_frame["dataset_family"].value_counts().sort_index().to_dict(),
         "quality_severity_counts": catalog_frame["quality_severity"].value_counts().sort_index().to_dict(),
         "output_file_count": len(output_inventory) + 5,
-        "canonical_format": "parquet",
+        "canonical_format": "parquet staging for DuckDB SQL import",
         "classification_basis": "structured fact content, detected dictionary tables, and worksheet/row text fingerprints",
     }
     with (output_dir / "summary.json").open("w", encoding="utf-8") as handle:

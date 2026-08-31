@@ -19,7 +19,8 @@ JOBS = [
     ("财产险", "clean_property_insurance.py", "output_property_insurance_clean"),
     ("保险业汇总", "clean_insurance_industry.py", "output_insurance_industry_clean"),
     ("监管统计表", "clean_regulatory_tables.py", "output_regulatory_tables_clean"),
-    ("模板与参考文档", "clean_excel_documents.py", "output_excel_documents_clean"),
+    ("参考文档", "clean_excel_documents.py", "output_excel_documents_clean"),
+    ("模板结构", "clean_excel_templates.py", "output_excel_templates_clean"),
 ]
 
 
@@ -35,8 +36,6 @@ def run_job(input_dir: Path, staging_root: Path, job: tuple[str, str, str], chec
     ]
     if check_only:
         command.append("--check-only")
-    if script_name == "clean_excel_documents.py":
-        command.append("--include-claimed-fallback")
     print(f"\n=== 解析：{label} ===", flush=True)
     subprocess.run(command, check=True)
 
@@ -54,8 +53,11 @@ def validate_output_target(output_dir: Path) -> None:
 def validate_result(candidate: Path, input_dir: Path) -> dict:
     summary_path = candidate / "summary.json"
     catalog_path = candidate / "source_catalog.parquet"
-    if not summary_path.exists() or not catalog_path.exists():
-        raise RuntimeError("最终结果缺少 summary.json 或 source_catalog.parquet")
+    manifest_path = candidate / "ingestion_manifest.parquet"
+    if not summary_path.exists() or not catalog_path.exists() or not manifest_path.exists():
+        raise RuntimeError(
+            "最终结果缺少 summary.json、source_catalog.parquet 或 ingestion_manifest.parquet"
+        )
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     source_count = sum(
         1
@@ -64,9 +66,16 @@ def validate_result(candidate: Path, input_dir: Path) -> dict:
         and path.suffix.lower() in {".xls", ".xlsx"}
         and not path.name.startswith("~$")
     )
-    if summary.get("classified_source_file_count") != source_count:
+    if int(summary.get("manifest_source_file_count", 0)) != source_count:
         raise RuntimeError(
-            f"最终分类数量不一致：{summary.get('classified_source_file_count')} != {source_count}"
+            f"全量清单数量不一致：{summary.get('manifest_source_file_count')} != {source_count}"
+        )
+    classified_count = int(summary.get("classified_source_file_count", 0))
+    excluded_count = int(summary.get("excluded_source_file_count", 0))
+    if classified_count + excluded_count != source_count:
+        raise RuntimeError(
+            "最终处理数量不一致："
+            f"{classified_count} classified + {excluded_count} excluded != {source_count}"
         )
     if summary.get("unclassified_source_file_count") or summary.get("duplicate_classification_count"):
         raise RuntimeError("最终结果存在漏分或重复分类")
@@ -77,7 +86,12 @@ def build(input_dir: Path, output_dir: Path, replace_output: bool, check_only: b
     validate_output_target(output_dir)
     if not input_dir.is_dir():
         raise SystemExit(f"原始 Excel 目录不存在：{input_dir}")
-    if output_dir.exists() and any(output_dir.iterdir()) and not replace_output:
+    if (
+        not check_only
+        and output_dir.exists()
+        and any(output_dir.iterdir())
+        and not replace_output
+    ):
         raise SystemExit(f"最新产物已存在；如需重跑请增加 --replace-output：{output_dir}")
 
     with TemporaryDirectory(prefix=".excel_clean_", dir=ROOT) as temporary:

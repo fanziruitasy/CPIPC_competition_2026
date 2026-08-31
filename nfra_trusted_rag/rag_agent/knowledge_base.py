@@ -1,10 +1,13 @@
 """结构化问答知识库：封装只读 DuckDB 数据仓库。"""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
 from .database import DuckDBRepository
+
+
 class KnowledgeBase:
     """为问答引擎提供数据仓库和知识库概况。"""
 

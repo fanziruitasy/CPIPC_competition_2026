@@ -6,7 +6,7 @@ import re
 import unicodedata
 from calendar import monthrange
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pyarrow as pa
@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 
 from clean_region_premium import (
     file_hash,
+    format_excel_value,
     get_cell,
     normalize_text,
     source_cell,
@@ -387,32 +388,7 @@ def parse_decimal(
 def regulatory_sheets(path: Path) -> list[dict]:
     if path.suffix.lower() == ".xlsx":
         return xlsx_sheets(path)
-    sheets = xls_sheets(path)
-    for sheet in sheets:
-        sheet["display_values"] = sheet["values"]
-    return sheets
-
-
-def format_excel_value(value: object, number_format: str | None) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, (int, float, Decimal)):
-        return str(value).strip()
-    if not number_format or number_format.lower() == "general":
-        return str(value).strip()
-
-    number = Decimal(str(value))
-    sections = number_format.split(";")
-    section = sections[1] if number < 0 and len(sections) > 1 else sections[0]
-    percent = "%" in section
-    shown = abs(number) * (100 if percent else 1)
-    decimals = re.search(r"\.([0#]+)", section)
-    places = len(decimals.group(1)) if decimals else 0
-    rounded = shown.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
-    rendered = f"{rounded:,.{places}f}" if "," in section else f"{rounded:.{places}f}"
-    if number < 0:
-        rendered = f"({rendered})" if "(" in section else f"-{rendered}"
-    return rendered + ("%" if percent else "")
+    return xls_sheets(path)
 
 
 def extract_footnotes(sheet: dict) -> str:
@@ -510,7 +486,7 @@ def make_fact(
     # Percentages must use displayed percentage points across xls and xlsx.
     value_input = display_raw if unit == "%" else raw_value if storage_based else display_raw
     value, status, flags = parse_decimal(value_input)
-    value_storage = parse_decimal(raw_value, None)[0] if storage_based else None
+    value_storage = parse_decimal(raw_value, Decimal("0.000000000000000001"))[0]
     if value is not None and divisor:
         value = (value / divisor).quantize(Decimal("0.000001"))
         flags.append(f"UNIT_CONVERTED_{unit_raw}_TO_{unit}")
@@ -559,6 +535,14 @@ def make_fact(
 
 def nonempty(value: object) -> bool:
     return value is not None and bool(str(value).strip())
+
+
+def sequence_number(value: object) -> int | None:
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return int(number) if number == number.to_integral_value() else None
 
 
 def parse_balance(
@@ -1284,11 +1268,10 @@ def parse_schedule(
             definition = get_cell(
                 definition_sheet, row_number, columns["指标范围及计算公式"]
             )
-            try:
-                sequence = int(
-                    str(get_cell(definition_sheet, row_number, columns["序号"])).strip()
-                )
-            except (TypeError, ValueError):
+            sequence = sequence_number(
+                get_cell(definition_sheet, row_number, columns["序号"])
+            )
+            if sequence is None:
                 continue
             if nonempty(metric_name) and nonempty(definition):
                 definitions.append(
@@ -1310,11 +1293,10 @@ def parse_schedule(
         for row_number in range(header_row + 1, len(scope_sheet["values"]) + 1):
             institution_type = get_cell(scope_sheet, row_number, columns["机构类"])
             scope_definition = get_cell(scope_sheet, row_number, columns["机构范围"])
-            try:
-                sequence = int(
-                    str(get_cell(scope_sheet, row_number, columns["序号"])).strip()
-                )
-            except (TypeError, ValueError):
+            sequence = sequence_number(
+                get_cell(scope_sheet, row_number, columns["序号"])
+            )
+            if sequence is None:
                 continue
             if nonempty(institution_type) and nonempty(scope_definition):
                 scopes.append(

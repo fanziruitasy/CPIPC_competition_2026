@@ -2,23 +2,23 @@
 
 Agent 采用惰性加载，首次请求时才读取知识库，便于 `import` 与启动解耦。
 """
+
 from __future__ import annotations
 
-import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from .agent import RagAgent
-
-DEFAULT_DB_PATH = Path(os.environ.get("RAG_DB_PATH", "nfra.duckdb"))
+from .config import DEFAULT_DB_PATH, env_flag
 
 
 class AskRequest(BaseModel):
     question: str
-    options: Optional[dict[str, str]] = None
+    options: dict[str, str] | None = None
 
 
 class EvaluateRequest(BaseModel):
@@ -28,21 +28,42 @@ class EvaluateRequest(BaseModel):
 def create_app(
     db_path: str | Path = DEFAULT_DB_PATH,
     *,
+    strict: bool = True,
     use_llm_planner: bool | None = None,
+    use_llm_answerer: bool | None = None,
 ) -> FastAPI:
     """创建一个只读取指定 DuckDB 文件的 FastAPI 应用。"""
-    app = FastAPI(title="金融监管 Excel DuckDB 结构化问答服务", version="2.0.0")
     agent: RagAgent | None = None
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            yield
+        finally:
+            if agent is not None:
+                agent.close()
+
+    app = FastAPI(
+        title="金融监管 Excel DuckDB 结构化问答服务",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
 
     def get_agent() -> RagAgent:
         nonlocal agent
         if agent is None:
             enabled = use_llm_planner
             if enabled is None:
-                enabled = os.environ.get("RAG_USE_LLM_PLANNER", "true").lower() not in {
-                    "0", "false", "off", "no"
-                }
-            agent = RagAgent(db_path, use_llm_planner=enabled)
+                enabled = env_flag("RAG_USE_LLM_PLANNER")
+            answerer_enabled = use_llm_answerer
+            if answerer_enabled is None:
+                answerer_enabled = env_flag("RAG_USE_LLM_ANSWERER")
+            agent = RagAgent(
+                db_path,
+                strict=strict,
+                use_llm_planner=enabled,
+                use_llm_answerer=answerer_enabled,
+            )
         return agent
 
     @app.get("/health")
@@ -56,15 +77,10 @@ def create_app(
     @app.post("/evaluate")
     def evaluate(req: EvaluateRequest) -> dict[str, Any]:
         from .evaluate import evaluate as run_eval
+
         return run_eval(get_agent(), Path(req.qa_file))
 
     return app
 
 
 app = create_app()
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("rag_agent.service:app", host="127.0.0.1", port=8000)
